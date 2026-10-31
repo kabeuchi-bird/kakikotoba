@@ -351,6 +351,35 @@ impl Editor {
         self.set_cursor(self.buffer.rope().len_chars(), true);
     }
 
+    /// `query` の次（`backward` なら前）の一致を選択する。端まで行ったら反対の端へ戻る。
+    // ponytail: 検索のたびに全文を走査。長い文書で遅くなったら索引を持つ
+    pub fn find(&mut self, query: &str, backward: bool) -> bool {
+        let fold = |c: char| c.to_lowercase().next().unwrap_or(c);
+        let query: Vec<char> = query.chars().map(fold).collect();
+        let text: Vec<char> = self.buffer.rope().chars().map(fold).collect();
+        if query.is_empty() {
+            return false;
+        }
+        let matches = |&start: &usize| text[start..].starts_with(&query);
+        let Some(last) = text.len().checked_sub(query.len()) else {
+            return false;
+        };
+        let (start, end) = self.selection().map_or((self.cursor, self.cursor), |range| (range.start, range.end));
+        let found = if backward {
+            let before = start.checked_sub(query.len()).map_or(0..0, |limit| 0..limit + 1);
+            before.rev().find(matches).or_else(|| (0..=last).rev().find(matches))
+        } else {
+            (end..=last).find(matches).or_else(|| (0..=last).find(matches))
+        };
+        let Some(found) = found else {
+            return false;
+        };
+        self.preferred_y = None;
+        self.anchor = Some(found);
+        self.set_cursor(found + query.len(), true);
+        true
+    }
+
     pub fn is_modified(&self) -> bool {
         self.buffer.is_modified()
     }
@@ -609,6 +638,37 @@ mod tests {
             e.insert("か");
             assert_eq!(text(e), "か");
             assert_eq!(e.selected_text(), None);
+        });
+    }
+
+    #[test]
+    fn find_moves_through_matches_and_wraps_at_both_ends() {
+        with_editor("猫と犬\nCat猫", |e| {
+            assert!(e.find("猫", false));
+            assert_eq!(e.selection(), Some(0..1));
+            assert_eq!(e.selected_text().as_deref(), Some("猫"));
+            assert!(e.find("猫", false));
+            assert_eq!(e.selection(), Some(7..8));
+            assert!(e.find("猫", false));
+            assert_eq!(e.selection(), Some(0..1));
+            assert!(e.find("猫", true));
+            assert_eq!(e.selection(), Some(7..8));
+            assert!(e.find("猫", true));
+            assert_eq!(e.selection(), Some(0..1));
+        });
+    }
+
+    #[test]
+    fn find_ignores_case_and_reports_no_match_without_moving() {
+        with_editor("猫と犬\nCat", |e| {
+            assert!(e.find("cAT", false));
+            assert_eq!(e.selected_text().as_deref(), Some("Cat"));
+            assert!(!e.find("鳥", false));
+            assert!(!e.find("", false));
+            assert!(!e.find("とても長い検索語で本文より長い", true));
+            assert_eq!(e.selected_text().as_deref(), Some("Cat"));
+            // 改行をまたがない
+            assert!(!e.find("犬C", false));
         });
     }
 

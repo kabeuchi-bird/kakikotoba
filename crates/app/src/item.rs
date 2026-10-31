@@ -148,6 +148,13 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "selectAll"]
         fn select_all(self: Pin<&mut VerticalEditor>);
+        /// 一致を選択できたらtrue
+        #[qinvokable]
+        #[cxx_name = "findText"]
+        fn find_text(self: Pin<&mut VerticalEditor>, query: &QString, backward: bool) -> bool;
+        #[qinvokable]
+        #[cxx_name = "selectedText"]
+        fn selected_text(self: &VerticalEditor) -> QString;
 
         // 以下の3つは失敗時にエラーメッセージ、成功時に空文字列を返す
         #[qinvokable]
@@ -452,6 +459,17 @@ impl qobject::VerticalEditor {
 
     fn select_all(self: Pin<&mut Self>) {
         self.edit_command(Editor::select_all);
+    }
+
+    fn find_text(mut self: Pin<&mut Self>, query: &QString, backward: bool) -> bool {
+        let query = String::from(query);
+        let mut found = false;
+        self.as_mut().edit_command(|editor| found = editor.find(&query, backward));
+        found
+    }
+
+    fn selected_text(&self) -> QString {
+        QString::from(self.rust().editor.selected_text().unwrap_or_default().as_str())
     }
 
     fn toggle_page_mode(mut self: Pin<&mut Self>) {

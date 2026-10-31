@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import Qt.labs.platform as Platform
 import org.kde.kirigami as Kirigami
 import kakikotoba
 
@@ -85,13 +86,46 @@ Kirigami.ApplicationWindow {
 
     /// 閉じたら編集領域へ入力を戻すメニュー
     component RestoringMenu: QQC2.Menu {
-        onClosed: editor.forceActiveFocus()
+        // メニューの項目が開いたダイアログから入力を奪わないように
+        onClosed: {
+            if (![commandSearch, pageSettingsDialog, metadataDialog, unsavedDialog].some(dialog => dialog.visible)) {
+                editor.forceActiveFocus();
+            }
+        }
     }
 
-    /// ショートカットを右端に示すメニュー項目
+    /// メニュー項目の定義。各メニューはこれを参照するだけにする
+    component Command: QQC2.Action {
+        /// 表示とキー登録に使う。Actionのshortcutは使わない（GlobalItemの登録と競合する）
+        property string keys
+    }
+
+    /// 検索バーのボタン。押しても入力先は検索欄のまま
+    component FindButton: QQC2.ToolButton {
+        id: findButton
+        property string tip
+        focusPolicy: Qt.NoFocus
+        QQC2.ToolTip.text: findButton.tip
+        QQC2.ToolTip.visible: hovered
+        QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+    }
+
+    /// グローバルメニューの項目。キーの登録もここで行う
+    component GlobalItem: Platform.MenuItem {
+        required property Command command
+        text: command.text
+        enabled: command.enabled
+        checkable: command.checkable
+        checked: command.checked
+        shortcut: command.keys
+        onTriggered: command.trigger()
+    }
+
+    /// ショートカットを右端に示すウィンドウ内メニューの項目
     component CommandItem: QQC2.MenuItem {
         id: commandItem
-        property string shortcutText
+        required property Command command
+        action: command
 
         contentItem: RowLayout {
             spacing: Kirigami.Units.gridUnit
@@ -104,120 +138,210 @@ Kirigami.ApplicationWindow {
                 enabled: commandItem.enabled
             }
             QQC2.Label {
-                text: commandItem.shortcutText
+                text: commandItem.command.keys
                 enabled: commandItem.enabled
                 opacity: 0.7
             }
         }
     }
 
+    /// コマンド検索の対象
+    readonly property var searchableCommands: [
+        newCommand, openCommand, saveCommand, saveAsCommand, quitCommand,
+        undoCommand, redoCommand, cutCommand, copyCommand, pasteCommand, selectAllCommand, findCommand,
+        pageModeCommand, pageSettingsCommand, metadataCommand, highlightCommand, symbolFormsCommand
+    ]
+
+    Command {
+        id: searchCommand
+        text: "コマンドを検索…"
+        keys: "Ctrl+Alt+I"
+        onTriggered: commandSearch.open()
+    }
+    Command {
+        id: newCommand
+        text: "新規"
+        keys: "Ctrl+N"
+        onTriggered: root.newDocument()
+    }
+    Command {
+        id: openCommand
+        text: "開く…"
+        keys: "Ctrl+O"
+        onTriggered: root.openDocument()
+    }
+    Command {
+        id: saveCommand
+        text: "保存"
+        keys: "Ctrl+S"
+        onTriggered: root.save()
+    }
+    Command {
+        id: saveAsCommand
+        text: "名前を付けて保存…"
+        keys: "Ctrl+Shift+S"
+        onTriggered: saveDialog.open()
+    }
+    Command {
+        id: quitCommand
+        text: "終了"
+        keys: "Ctrl+Q"
+        onTriggered: root.close()
+    }
+    Command {
+        id: undoCommand
+        text: "元に戻す"
+        keys: "Ctrl+Z"
+        enabled: editor.canUndo
+        onTriggered: editor.undo()
+    }
+    Command {
+        id: redoCommand
+        text: "やり直す"
+        keys: "Ctrl+Y"
+        enabled: editor.canRedo
+        onTriggered: editor.redo()
+    }
+    Command {
+        id: cutCommand
+        text: "切り取り"
+        keys: "Ctrl+X"
+        enabled: editor.hasSelection
+        onTriggered: editor.cut()
+    }
+    Command {
+        id: copyCommand
+        text: "コピー"
+        keys: "Ctrl+C"
+        enabled: editor.hasSelection
+        onTriggered: editor.copy()
+    }
+    Command {
+        id: pasteCommand
+        text: "貼り付け"
+        keys: "Ctrl+V"
+        enabled: !editor.pageMode
+        onTriggered: editor.paste()
+    }
+    Command {
+        id: selectAllCommand
+        text: "すべて選択"
+        keys: "Ctrl+A"
+        enabled: !editor.pageMode
+        onTriggered: editor.selectAll()
+    }
+    Command {
+        id: findCommand
+        text: "検索…"
+        keys: "Ctrl+F"
+        enabled: !editor.pageMode
+        onTriggered: findBar.show()
+    }
+    Command {
+        id: pageModeCommand
+        text: editor.pageMode ? "編集モードへ" : "ページ表示"
+        keys: "F5"
+        onTriggered: editor.togglePageMode()
+    }
+    Command {
+        id: pageSettingsCommand
+        text: "ページ設定…"
+        onTriggered: pageSettingsDialog.open()
+    }
+    Command {
+        id: metadataCommand
+        text: "文書情報…"
+        onTriggered: root.showMetadata()
+    }
+    Command {
+        id: highlightCommand
+        text: "記法ハイライト"
+        checkable: true
+        checked: settings.highlightEnabled
+        onTriggered: {
+            settings.highlightEnabled = checked;
+            root.applyHighlightOptions();
+        }
+    }
+    Command {
+        id: symbolFormsCommand
+        text: "PreTNFの記号形式"
+        checkable: true
+        checked: settings.symbolFormsEnabled
+        enabled: settings.highlightEnabled
+        onTriggered: {
+            settings.symbolFormsEnabled = checked;
+            root.applyHighlightOptions();
+        }
+    }
+
+    Platform.MenuBar {
+        Platform.Menu {
+            title: "ファイル(&F)"
+            GlobalItem { command: newCommand }
+            GlobalItem { command: openCommand }
+            Platform.MenuSeparator {}
+            GlobalItem { command: saveCommand }
+            GlobalItem { command: saveAsCommand }
+            Platform.MenuSeparator {}
+            GlobalItem { command: quitCommand }
+        }
+        Platform.Menu {
+            title: "編集(&E)"
+            GlobalItem { command: undoCommand }
+            GlobalItem { command: redoCommand }
+            Platform.MenuSeparator {}
+            GlobalItem { command: cutCommand }
+            GlobalItem { command: copyCommand }
+            GlobalItem { command: pasteCommand }
+            Platform.MenuSeparator {}
+            GlobalItem { command: selectAllCommand }
+            GlobalItem { command: findCommand }
+        }
+        Platform.Menu {
+            title: "表示(&V)"
+            GlobalItem { command: pageModeCommand }
+            GlobalItem { command: pageSettingsCommand }
+            GlobalItem { command: metadataCommand }
+            GlobalItem { command: searchCommand }
+            Platform.MenuSeparator {}
+            GlobalItem { command: highlightCommand }
+            GlobalItem { command: symbolFormsCommand }
+        }
+    }
+
     menuBar: QQC2.MenuBar {
         RestoringMenu {
             title: "ファイル(&F)"
-            CommandItem {
-                text: "新規"
-                shortcutText: "Ctrl+N"
-                onTriggered: root.newDocument()
-            }
-            CommandItem {
-                text: "開く…"
-                shortcutText: "Ctrl+O"
-                onTriggered: root.openDocument()
-            }
+            CommandItem { command: newCommand }
+            CommandItem { command: openCommand }
             QQC2.MenuSeparator {}
-            CommandItem {
-                text: "保存"
-                shortcutText: "Ctrl+S"
-                onTriggered: root.save()
-            }
-            CommandItem {
-                text: "名前を付けて保存…"
-                shortcutText: "Ctrl+Shift+S"
-                onTriggered: saveDialog.open()
-            }
+            CommandItem { command: saveCommand }
+            CommandItem { command: saveAsCommand }
             QQC2.MenuSeparator {}
-            CommandItem {
-                text: "終了"
-                shortcutText: "Ctrl+Q"
-                onTriggered: root.close()
-            }
+            CommandItem { command: quitCommand }
         }
         RestoringMenu {
             title: "編集(&E)"
-            CommandItem {
-                text: "元に戻す"
-                shortcutText: "Ctrl+Z"
-                enabled: editor.canUndo
-                onTriggered: editor.undo()
-            }
-            CommandItem {
-                text: "やり直す"
-                shortcutText: "Ctrl+Y"
-                enabled: editor.canRedo
-                onTriggered: editor.redo()
-            }
+            CommandItem { command: undoCommand }
+            CommandItem { command: redoCommand }
             QQC2.MenuSeparator {}
-            CommandItem {
-                text: "切り取り"
-                shortcutText: "Ctrl+X"
-                enabled: editor.hasSelection
-                onTriggered: editor.cut()
-            }
-            CommandItem {
-                text: "コピー"
-                shortcutText: "Ctrl+C"
-                enabled: editor.hasSelection
-                onTriggered: editor.copy()
-            }
-            CommandItem {
-                text: "貼り付け"
-                shortcutText: "Ctrl+V"
-                enabled: !editor.pageMode
-                onTriggered: editor.paste()
-            }
+            CommandItem { command: cutCommand }
+            CommandItem { command: copyCommand }
+            CommandItem { command: pasteCommand }
             QQC2.MenuSeparator {}
-            CommandItem {
-                text: "すべて選択"
-                shortcutText: "Ctrl+A"
-                enabled: !editor.pageMode
-                onTriggered: editor.selectAll()
-            }
+            CommandItem { command: selectAllCommand }
+            CommandItem { command: findCommand }
         }
         RestoringMenu {
             title: "表示(&V)"
-            CommandItem {
-                text: editor.pageMode ? "編集モードへ" : "ページ表示"
-                shortcutText: "F5"
-                onTriggered: editor.togglePageMode()
-            }
-            CommandItem {
-                text: "ページ設定…"
-                onTriggered: pageSettingsDialog.open()
-            }
-            CommandItem {
-                text: "文書情報…"
-                onTriggered: root.showMetadata()
-            }
+            CommandItem { command: pageModeCommand }
+            CommandItem { command: pageSettingsCommand }
+            CommandItem { command: metadataCommand }
+            CommandItem { command: searchCommand }
             QQC2.MenuSeparator {}
-            CommandItem {
-                text: "記法ハイライト"
-                checkable: true
-                checked: settings.highlightEnabled
-                onTriggered: {
-                    settings.highlightEnabled = checked;
-                    root.applyHighlightOptions();
-                }
-            }
-            CommandItem {
-                text: "PreTNFの記号形式"
-                checkable: true
-                checked: settings.symbolFormsEnabled
-                enabled: settings.highlightEnabled
-                onTriggered: {
-                    settings.symbolFormsEnabled = checked;
-                    root.applyHighlightOptions();
-                }
-            }
+            CommandItem { command: highlightCommand }
+            CommandItem { command: symbolFormsCommand }
         }
     }
 
@@ -243,6 +367,76 @@ Kirigami.ApplicationWindow {
         padding: 0
         globalToolBarStyle: Kirigami.ApplicationHeaderStyle.None
 
+        footer: QQC2.ToolBar {
+            id: findBar
+
+            property bool notFound: false
+
+            function show() {
+                const selected = editor.selectedText();
+                if (selected && !selected.includes("\n")) {
+                    findField.text = selected;
+                }
+                notFound = false;
+                visible = true;
+                findField.selectAll();
+                findField.forceActiveFocus();
+            }
+
+            function hide() {
+                visible = false;
+                editor.forceActiveFocus();
+            }
+
+            function find(backward) {
+                if (findField.text) {
+                    notFound = !editor.findText(findField.text, backward);
+                }
+            }
+
+            visible: false
+
+            contentItem: RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+                QQC2.TextField {
+                    id: findField
+                    Layout.fillWidth: true
+                    placeholderText: "本文を検索…"
+                    onTextEdited: findBar.notFound = false
+                    Keys.onPressed: event => {
+                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                            findBar.find(event.modifiers & Qt.ShiftModifier);
+                            event.accepted = true;
+                        } else if (event.key === Qt.Key_Escape) {
+                            findBar.hide();
+                            event.accepted = true;
+                        }
+                    }
+                }
+                QQC2.Label {
+                    visible: findBar.notFound
+                    text: "見つかりません"
+                }
+                FindButton {
+                    text: "←"
+                    tip: "次を検索（Enter）"
+                    enabled: findField.text !== ""
+                    onClicked: findBar.find(false)
+                }
+                FindButton {
+                    text: "→"
+                    tip: "前を検索（Shift+Enter）"
+                    enabled: findField.text !== ""
+                    onClicked: findBar.find(true)
+                }
+                FindButton {
+                    text: "✕"
+                    tip: "閉じる（Esc）"
+                    onClicked: findBar.hide()
+                }
+            }
+        }
+
         VerticalEditor {
             id: editor
             anchors.fill: parent
@@ -261,6 +455,7 @@ Kirigami.ApplicationWindow {
             paperColor: Kirigami.Theme.alternateBackgroundColor
             // Backspaceがウィンドウ側のショートカットに取られると、編集領域へ届かない
             Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Backspace
+            onPageModeChanged: findBar.hide()
 
             TapHandler {
                 acceptedButtons: Qt.RightButton
@@ -270,88 +465,79 @@ Kirigami.ApplicationWindow {
             RestoringMenu {
                 id: optionsMenu
 
-                CommandItem {
-                    text: "切り取り"
-                    shortcutText: "Ctrl+X"
-                    enabled: editor.hasSelection
-                    onTriggered: editor.cut()
-                }
-                CommandItem {
-                    text: "コピー"
-                    shortcutText: "Ctrl+C"
-                    enabled: editor.hasSelection
-                    onTriggered: editor.copy()
-                }
-                CommandItem {
-                    text: "貼り付け"
-                    shortcutText: "Ctrl+V"
-                    enabled: !editor.pageMode
-                    onTriggered: editor.paste()
-                }
+                CommandItem { command: cutCommand }
+                CommandItem { command: copyCommand }
+                CommandItem { command: pasteCommand }
                 QQC2.MenuSeparator {}
-                CommandItem {
-                    text: editor.pageMode ? "編集モードへ" : "ページ表示"
-                    shortcutText: "F5"
-                    onTriggered: editor.togglePageMode()
-                }
+                CommandItem { command: pageModeCommand }
             }
         }
     }
 
-    // メニューの表示と揃えるため明示する。StandardKeyはテーマによって割り当てが異なる
+    // メニューに載らないキーだけ。他はGlobalItemが登録する
     Shortcut {
-        sequence: "Ctrl+N"
-        onActivated: root.newDocument()
-    }
-    Shortcut {
-        sequence: "Ctrl+O"
-        onActivated: root.openDocument()
-    }
-    Shortcut {
-        sequence: "Ctrl+S"
-        onActivated: root.save()
-    }
-    Shortcut {
-        sequence: "Ctrl+Shift+S"
-        onActivated: saveDialog.open()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+Q"
-        onActivated: root.close()
-    }
-    Shortcut {
-        sequence: "Ctrl+Z"
-        onActivated: editor.undo()
-    }
-    Shortcut {
-        sequences: ["Ctrl+Y", "Ctrl+Shift+Z"]
+        sequence: "Ctrl+Shift+Z"
         onActivated: editor.redo()
-    }
-    Shortcut {
-        sequence: "Ctrl+X"
-        onActivated: editor.cut()
-    }
-    Shortcut {
-        sequence: "Ctrl+C"
-        onActivated: editor.copy()
-    }
-    Shortcut {
-        sequence: "Ctrl+V"
-        onActivated: editor.paste()
-    }
-    Shortcut {
-        sequence: "Ctrl+A"
-        onActivated: editor.selectAll()
-    }
-    Shortcut {
-        sequence: "F5"
-        onActivated: editor.togglePageMode()
     }
     Shortcut {
         sequence: "Esc"
         enabled: editor.pageMode
         onActivated: editor.togglePageMode()
+    }
+
+    Kirigami.SearchDialog {
+        id: commandSearch
+
+        /// 閉じた後に実行するコマンド。先に実行すると、開いたダイアログから入力を奪ってしまう
+        property Command chosen: null
+
+        function choose(command) {
+            if (command.enabled) {
+                chosen = command;
+                close();
+            }
+        }
+
+        parent: root.overlay
+        searchFieldPlaceholderText: "コマンドを検索…"
+        emptyText: "見つかりません"
+        model: {
+            const query = text.trim().toLowerCase();
+            return root.searchableCommands.filter(command => command.text.toLowerCase().includes(query));
+        }
+        delegate: QQC2.ItemDelegate {
+            id: commandRow
+            required property Command modelData
+            width: ListView.view.width
+            enabled: modelData.enabled
+            highlighted: ListView.isCurrentItem
+            onClicked: commandSearch.choose(modelData)
+            contentItem: RowLayout {
+                spacing: Kirigami.Units.gridUnit
+                QQC2.Label {
+                    Layout.fillWidth: true
+                    text: commandRow.modelData.text
+                }
+                QQC2.Label {
+                    text: commandRow.modelData.checkable
+                        ? (commandRow.modelData.checked ? "オン" : "オフ") : commandRow.modelData.keys
+                    opacity: 0.7
+                }
+            }
+        }
+        onAccepted: {
+            if (currentItem) {
+                choose(currentItem.modelData);
+            }
+        }
+        onClosed: {
+            editor.forceActiveFocus();
+            const command = chosen;
+            chosen = null;
+            if (command) {
+                command.trigger();
+            }
+        }
     }
 
     Kirigami.PromptDialog {
