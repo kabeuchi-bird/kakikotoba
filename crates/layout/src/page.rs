@@ -310,7 +310,7 @@ impl<'a, 'f> Flow<'a, 'f> {
             let metrics: Vec<_> = pieces.iter().map(|p| (p.first, p.last, p.advance)).collect();
             let mut pieces = pieces.into_iter();
             let mut start = 0;
-            for end in kinsoku::break_columns(&metrics, limit, false) {
+            for end in kinsoku::break_columns(&metrics, limit, kinsoku::Wrap::default()) {
                 let column: Vec<Piece> = pieces.by_ref().take(end - start).collect();
                 let length: f32 = column.iter().map(|p| p.advance).sum();
                 let y_offset = indent

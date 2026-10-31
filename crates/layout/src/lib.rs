@@ -236,9 +236,10 @@ impl Layout {
             stops: Vec::new(),
             columns: Vec::new(),
         };
+        let hyphen = font.shape_rotated("-", settings.font_size);
         let mut char_index = 0;
         for line in text.split('\n') {
-            layout.push_paragraph(line.strip_suffix('\r').unwrap_or(line), char_index, font);
+            layout.push_paragraph(line.strip_suffix('\r').unwrap_or(line), char_index, font, &hyphen);
             char_index += line.chars().count() + 1;
         }
         layout.apply_runs(runs);
@@ -256,7 +257,7 @@ impl Layout {
         }
     }
 
-    fn push_paragraph(&mut self, text: &str, first_char: usize, font: &Font) {
+    fn push_paragraph(&mut self, text: &str, first_char: usize, font: &Font, hyphen: &[ShapedCluster]) {
         let Settings { font_size, chars_per_column, .. } = self.settings;
         let shaped = font.shape_oriented(text, font_size);
 
@@ -270,7 +271,11 @@ impl Layout {
                 (first, source.chars().next_back().unwrap_or(first), c.advance)
             })
             .collect();
-        let ends = kinsoku::break_columns(&metrics, chars_per_column as f32 * font_size, true);
+        let ends = kinsoku::break_columns(
+            &metrics,
+            chars_per_column as f32 * font_size,
+            kinsoku::Wrap { hanging: true, hyphen: hyphen.first().map(|c| c.advance) },
+        );
 
         let mut char_index = first_char;
         let mut y = 0.0;
@@ -304,6 +309,13 @@ impl Layout {
                 y += cluster.advance;
                 char_index += text[cluster.byte_start..byte_end(i)].chars().count();
             }
+            // 単語の途中で分けたら列末にハイフンを出す。カーソルは止まらない
+            if end > 0
+                && let Some(next) = metrics.get(end)
+                && kinsoku::splits_word(metrics[end - 1].1, next.0)
+            {
+                self.push_hyphen(hyphen, center, y, char_index - 1);
+            }
             self.columns.push(first_stop..self.stops.len());
             start = end;
         }
@@ -314,6 +326,22 @@ impl Layout {
         let column = self.columns.len() - 1;
         self.stops.push(Stop { char_index, column, y, advance: 0.0 });
         self.columns[column].end = self.stops.len();
+    }
+
+    fn push_hyphen(&mut self, hyphen: &[ShapedCluster], center: f32, y: f32, char_index: usize) {
+        for cluster in hyphen {
+            for &(id, dx, dy) in &cluster.glyphs {
+                self.glyphs.push(Glyph {
+                    id,
+                    x: center + dx,
+                    y: y + dy,
+                    char_index,
+                    color: 0,
+                    scale: cluster.scale,
+                    rotated: cluster.rotated,
+                });
+            }
+        }
     }
 
     fn column_center(&self, column: usize) -> f32 {
@@ -565,6 +593,49 @@ mod tests {
             // 英字は字幅に応じて進み、全角より狭い
             let (a, i) = (layout.cursor_rect(1).y, layout.cursor_rect(2).y);
             assert!(i > a && i - a < 10.0);
+        });
+    }
+
+    #[test]
+    fn split_word_gets_a_display_only_hyphen() {
+        with_font(|font| {
+            let text = "international";
+            let settings = Settings { chars_per_column: 3, ..SETTINGS };
+            let layout = Layout::new(text, font, settings, &[]);
+            assert!(layout.column_count() >= 2);
+
+            // 文字数より、分割の数だけグリフが多い
+            let hyphens = layout.column_count() - 1;
+            assert_eq!(layout.glyphs.len(), text.len() + hyphens);
+
+            // カーソルは元の文字にしか止まらず、ソースの文字数のまま
+            let seen = std::iter::successors(Some(0), |&i| Some(layout.next_char(i)).filter(|&n| n != i));
+            assert_eq!(seen.collect::<Vec<_>>(), (0..=text.len()).collect::<Vec<_>>());
+
+            // ハイフンは列の字数に収まる
+            let limit = settings.chars_per_column as f32 * settings.font_size;
+            assert!(layout.glyphs.iter().all(|g| g.y <= limit + 0.01), "{:?}", layout.glyphs);
+        });
+    }
+
+    #[test]
+    fn hyphen_takes_the_color_of_the_word_and_runs_stay_ordered() {
+        with_font(|font| {
+            let settings = Settings { chars_per_column: 3, ..SETTINGS };
+            let runs = [Run { range: 0..13, color: 2 }];
+            let layout = Layout::new("internationalあ", font, settings, &runs);
+            let (last, word) = layout.glyphs.split_last().unwrap();
+            assert!(word.iter().all(|g| g.color == 2));
+            assert_eq!(last.color, 0);
+        });
+    }
+
+    #[test]
+    fn no_hyphen_for_japanese() {
+        with_font(|font| {
+            let settings = Settings { chars_per_column: 2, ..SETTINGS };
+            let layout = Layout::new("あいうえお", font, settings, &[]);
+            assert_eq!(layout.glyphs.len(), 5);
         });
     }
 
