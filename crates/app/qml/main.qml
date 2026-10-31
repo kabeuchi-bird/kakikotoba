@@ -61,19 +61,6 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    function newDocument() {
-        afterConfirmingUnsaved(() => editor.newDocument());
-    }
-
-    function openDocument() {
-        afterConfirmingUnsaved(() => openDialog.open());
-    }
-
-    function showMetadata() {
-        metadataDialog.subtitle = editor.metadataText() || "文書情報はありません";
-        metadataDialog.open();
-    }
-
     function afterConfirmingUnsaved(action) {
         pendingAction = action;
         if (editor.modified) {
@@ -171,13 +158,13 @@ Kirigami.ApplicationWindow {
         id: newCommand
         text: "新規"
         keys: "Ctrl+N"
-        onTriggered: root.newDocument()
+        onTriggered: root.afterConfirmingUnsaved(() => editor.newDocument())
     }
     Command {
         id: openCommand
         text: "開く…"
         keys: "Ctrl+O"
-        onTriggered: root.openDocument()
+        onTriggered: root.afterConfirmingUnsaved(() => openDialog.open())
     }
     Command {
         id: saveCommand
@@ -260,7 +247,10 @@ Kirigami.ApplicationWindow {
     Command {
         id: metadataCommand
         text: "文書情報…"
-        onTriggered: root.showMetadata()
+        onTriggered: {
+            metadataDialog.subtitle = editor.metadataText() || "文書情報はありません";
+            metadataDialog.open();
+        }
     }
     Command {
         id: highlightCommand

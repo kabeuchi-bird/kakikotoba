@@ -13,7 +13,6 @@ pub struct Document {
 pub struct Metadata {
     pub label: &'static str,
     pub value: String,
-    pub span: Range<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

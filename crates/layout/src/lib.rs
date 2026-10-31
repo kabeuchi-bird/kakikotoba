@@ -163,6 +163,12 @@ impl<'a> Font<'a> {
     }
 }
 
+/// 文字列の先頭と末尾の文字。空なら空白。
+fn edge_chars(text: &str) -> (char, char) {
+    let first = text.chars().next().unwrap_or(' ');
+    (first, text.chars().next_back().unwrap_or(first))
+}
+
 struct ShapedCluster {
     byte_start: usize,
     advance: f32,
@@ -270,8 +276,8 @@ impl Layout {
             .enumerate()
             .map(|(i, c)| {
                 let source = &text[c.byte_start..byte_end(i)];
-                let first = source.chars().next().unwrap_or(' ');
-                (first, source.chars().next_back().unwrap_or(first), c.advance)
+                let (first, last) = edge_chars(source);
+                (first, last, c.advance)
             })
             .collect();
         let ends = kinsoku::break_columns(
@@ -298,17 +304,7 @@ impl Layout {
                         advance: stop_advance,
                     });
                 }
-                for &(id, dx, dy) in &cluster.glyphs {
-                    self.glyphs.push(Glyph {
-                        id,
-                        x: center + dx,
-                        y: y + dy,
-                        char_index,
-                        color: 0,
-                        scale: cluster.scale,
-                        rotated: cluster.rotated,
-                    });
-                }
+                self.push_cluster(cluster, center, y, char_index);
                 y += cluster.advance;
                 char_index += text[cluster.byte_start..byte_end(i)].chars().count();
             }
@@ -317,7 +313,7 @@ impl Layout {
                 && let Some(next) = metrics.get(end)
                 && kinsoku::splits_word(metrics[end - 1].1, next.0)
             {
-                self.push_hyphen(hyphen, center, y, char_index - 1);
+                hyphen.iter().for_each(|cluster| self.push_cluster(cluster, center, y, char_index - 1));
             }
             self.columns.push(first_stop..self.stops.len());
             start = end;
@@ -331,20 +327,16 @@ impl Layout {
         self.columns[column].end = self.stops.len();
     }
 
-    fn push_hyphen(&mut self, hyphen: &[ShapedCluster], center: f32, y: f32, char_index: usize) {
-        for cluster in hyphen {
-            for &(id, dx, dy) in &cluster.glyphs {
-                self.glyphs.push(Glyph {
-                    id,
-                    x: center + dx,
-                    y: y + dy,
-                    char_index,
-                    color: 0,
-                    scale: cluster.scale,
-                    rotated: cluster.rotated,
-                });
-            }
-        }
+    fn push_cluster(&mut self, cluster: &ShapedCluster, center: f32, y: f32, char_index: usize) {
+        self.glyphs.extend(cluster.glyphs.iter().map(|&(id, dx, dy)| Glyph {
+            id,
+            x: center + dx,
+            y: y + dy,
+            char_index,
+            color: 0,
+            scale: cluster.scale,
+            rotated: cluster.rotated,
+        }));
     }
 
     fn column_center(&self, column: usize) -> f32 {

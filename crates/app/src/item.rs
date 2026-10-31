@@ -233,6 +233,17 @@ pub fn set_startup_editor(editor: Editor) {
     STARTUP_EDITOR.set(Some(editor));
 }
 
+/// `set_startup_editor` で置かれた `Editor` を、アイテムの生成時に受け取る。
+struct StartupEditor(Editor);
+
+impl Default for StartupEditor {
+    fn default() -> Self {
+        // ponytail: 1ウィンドウ1文書。複数文書を開くならアイテムのプロパティで渡す
+        Self(STARTUP_EDITOR.take().expect("VerticalEditorは1つだけ生成する"))
+    }
+}
+
+#[derive(Default)]
 pub struct VerticalEditorRust {
     text_color: QColor,
     selection_color: QColor,
@@ -253,41 +264,11 @@ pub struct VerticalEditorRust {
     modified: bool,
     has_file: bool,
     document_name: QString,
-    editor: Editor,
+    editor: StartupEditor,
     /// `(ゴシックか, 字サイズの1/64px)` ごとのフォント
     raw_fonts: HashMap<(bool, u32), UniquePtr<qobject::QRawFont>>,
     /// ページモードからのクリックで編集モードに戻った後、そのドラッグを選択にしない
     ignore_drag: bool,
-}
-
-impl Default for VerticalEditorRust {
-    fn default() -> Self {
-        Self {
-            text_color: QColor::default(),
-            selection_color: QColor::default(),
-            delimiter_color: QColor::default(),
-            tag_color: QColor::default(),
-            ruby_color: QColor::default(),
-            emphasis_color: QColor::default(),
-            sideline_color: QColor::default(),
-            comment_color: QColor::default(),
-            strong_color: QColor::default(),
-            code_color: QColor::default(),
-            paper_color: QColor::default(),
-            can_undo: false,
-            can_redo: false,
-            has_selection: false,
-            page_mode: false,
-            page_label: QString::default(),
-            modified: false,
-            has_file: false,
-            document_name: QString::default(),
-            // ponytail: 1ウィンドウ1文書。複数文書を開くならアイテムのプロパティで渡す
-            editor: STARTUP_EDITOR.take().expect("VerticalEditorは1つだけ生成する"),
-            raw_fonts: HashMap::new(),
-            ignore_drag: false,
-        }
-    }
 }
 
 impl cxx_qt::Initialize for qobject::VerticalEditor {
@@ -299,7 +280,7 @@ impl cxx_qt::Initialize for qobject::VerticalEditor {
 
 /// ページモードの見開きを描く。
 fn paint_pages(rust: &mut VerticalEditorRust, mut painter: Pin<&mut qobject::QPainter>, width: f32, height: f32) {
-    let view = rust.editor.page_view().expect("呼び出し元で確認済み");
+    let view = rust.editor.0.page_view().expect("呼び出し元で確認済み");
     let em = view.em(width, height);
     for placed in view.placed_pages(width, height) {
         let paper = view.page_rect(&placed, em);
@@ -328,7 +309,7 @@ fn paint_pages(rust: &mut VerticalEditorRust, mut painter: Pin<&mut qobject::QPa
             positions.extend([placed.x + glyph.x * em, placed.y + glyph.y * em]);
         }
         for ((sans, scale), (ids, positions)) in &batches {
-            let font = raw_font(&mut rust.raw_fonts, &rust.editor.fonts, *sans, f32::from_bits(*scale) * em);
+            let font = raw_font(&mut rust.raw_fonts, &rust.editor.0.fonts, *sans, f32::from_bits(*scale) * em);
             qobject::draw_glyphs(painter.as_mut(), font, &rust.text_color, ids, positions);
         }
     }
@@ -377,11 +358,11 @@ fn raw_font<'a>(
 
 impl qobject::VerticalEditor {
     fn editor_mut(self: Pin<&mut Self>) -> &mut Editor {
-        &mut self.rust_mut().get_mut().editor
+        &mut self.rust_mut().get_mut().editor.0
     }
 
     fn sync_properties(mut self: Pin<&mut Self>) {
-        let editor = &self.rust().editor;
+        let editor = &self.rust().editor.0;
         let (modified, has_file) = (editor.is_modified(), editor.has_file());
         let name = QString::from(editor.document_name().as_str());
         let (can_undo, can_redo, has_selection) = (editor.can_undo(), editor.can_redo(), editor.has_selection());
@@ -469,7 +450,7 @@ impl qobject::VerticalEditor {
     }
 
     fn selected_text(&self) -> QString {
-        QString::from(self.rust().editor.selected_text().unwrap_or_default().as_str())
+        QString::from(self.rust().editor.0.selected_text().unwrap_or_default().as_str())
     }
 
     fn toggle_page_mode(mut self: Pin<&mut Self>) {
@@ -489,7 +470,7 @@ impl qobject::VerticalEditor {
     }
 
     fn metadata_text(&self) -> QString {
-        QString::from(self.rust().editor.metadata_text().as_str())
+        QString::from(self.rust().editor.0.metadata_text().as_str())
     }
 
     /// ファイル操作の結果をQMLへ返す形にする。
@@ -523,9 +504,9 @@ impl qobject::VerticalEditor {
         let size = self.size();
         let rust = self.as_mut().rust_mut().get_mut();
         let (width, height) = (size.width() as f32, size.height() as f32);
-        rust.editor.resize(width, height);
+        rust.editor.0.resize(width, height);
 
-        if rust.editor.page_view().is_some() {
+        if rust.editor.0.page_view().is_some() {
             paint_pages(rust, painter.as_mut(), width, height);
             return;
         }
@@ -533,13 +514,13 @@ impl qobject::VerticalEditor {
         let mut fill = |rect: Rect, color: &QColor| {
             qobject::fill_rect(painter.as_mut(), rect.x, rect.y, rect.width, rect.height, color);
         };
-        for rect in rust.editor.selection_rects() {
+        for rect in rust.editor.0.selection_rects() {
             fill(rect, &rust.selection_color);
         }
-        for rect in rust.editor.preedit_lines() {
+        for rect in rust.editor.0.preedit_lines() {
             fill(rect, &rust.text_color);
         }
-        fill(rust.editor.caret_rect(), &rust.text_color);
+        fill(rust.editor.0.caret_rect(), &rust.text_color);
 
         // 色属性の値は `Kind` の並びに1を足したもの。0は既定の文字色
         let palette = [
@@ -555,13 +536,13 @@ impl qobject::VerticalEditor {
         ];
         // 色、字サイズ、向きごとにまとめて描く
         let mut batches: GlyphBatches<(u8, u32, bool)> = HashMap::new();
-        for glyph in rust.editor.visible_glyphs() {
+        for glyph in rust.editor.0.visible_glyphs() {
             let (ids, positions) = batches.entry((glyph.color, glyph.size.to_bits(), glyph.rotated)).or_default();
             ids.push(glyph.id);
             positions.extend([glyph.x, glyph.y]);
         }
         for ((color, size, rotated), (ids, positions)) in &batches {
-            let font = raw_font(&mut rust.raw_fonts, &rust.editor.fonts, false, f32::from_bits(*size));
+            let font = raw_font(&mut rust.raw_fonts, &rust.editor.0.fonts, false, f32::from_bits(*size));
             let color = palette[*color as usize];
             if *rotated {
                 qobject::draw_glyphs_rotated(painter.as_mut(), font, color, ids, positions);
@@ -628,11 +609,11 @@ impl qobject::VerticalEditor {
         qobject::focus_item(self.as_mut());
         let (x, y) = (qobject::mouse_x(event), qobject::mouse_y(event));
         let rust = self.as_mut().rust_mut().get_mut();
-        rust.ignore_drag = rust.editor.page_view().is_some();
+        rust.ignore_drag = rust.editor.0.page_view().is_some();
         if rust.ignore_drag {
-            rust.editor.jump_to_editing(x, y);
+            rust.editor.0.jump_to_editing(x, y);
         } else {
-            rust.editor.click(x, y, qobject::mouse_shift(event));
+            rust.editor.0.click(x, y, qobject::mouse_shift(event));
         }
         self.refresh();
     }
@@ -682,7 +663,7 @@ impl qobject::VerticalEditor {
     }
 
     fn input_method_query(&self, query: qobject::InputMethodQuery) -> QVariant {
-        let editor = &self.rust().editor;
+        let editor = &self.rust().editor.0;
         match query {
             // ページモードは閲覧専用
             qobject::InputMethodQuery::ImEnabled => QVariant::from(&editor.page_view().is_none()),
@@ -690,7 +671,7 @@ impl qobject::VerticalEditor {
                 let r = editor.cursor_rect();
                 QVariant::from(&QRectF::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64))
             }
-            qobject::InputMethodQuery::ImCursorPosition => QVariant::from(&(editor.cursor_position() as i32)),
+            qobject::InputMethodQuery::ImCursorPosition => QVariant::from(&(editor.caret_index() as i32)),
             qobject::InputMethodQuery::ImAnchorPosition => QVariant::from(&(editor.anchor_position() as i32)),
             qobject::InputMethodQuery::ImHints => QVariant::from(&0i32),
             _ => QVariant::default(),

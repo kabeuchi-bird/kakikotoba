@@ -46,6 +46,14 @@ fn push_text(out: &mut Vec<Inline>, text: &str, start: usize) {
     push_plain(out, text_start..chars.len());
 }
 
+/// インラインの追加先。組み立て中の傍点・太字があればその中。
+fn target<'a>(frames: &'a mut [Frame], inlines: &'a mut Vec<Inline>) -> &'a mut Vec<Inline> {
+    match frames.last_mut() {
+        Some(frame) => &mut frame.children,
+        None => inlines,
+    }
+}
+
 pub(crate) fn parse(text: &str) -> Document {
     let boundaries: Vec<usize> = text.char_indices().map(|(byte, _)| byte).collect();
     let to_char = |byte: usize| boundaries.partition_point(|&b| b < byte);
@@ -59,10 +67,6 @@ pub(crate) fn parse(text: &str) -> Document {
 
     for (event, range) in Parser::new_ext(text, Options::ENABLE_TABLES).into_offset_iter() {
         let span = to_char(range.start)..to_char(range.end);
-        let target = |frames: &mut Vec<Frame>, inlines: &mut Vec<Inline>, f: &mut dyn FnMut(&mut Vec<Inline>)| match frames.last_mut() {
-            Some(frame) => f(&mut frame.children),
-            None => f(inlines),
-        };
         // 項目のテキストは段落に包まれないことがあるので、次のブロックの前に確定する
         let closes_item = matches!(
             event,
@@ -84,7 +88,7 @@ pub(crate) fn parse(text: &str) -> Document {
                 let frame = frames.pop().expect("Startと対応する");
                 let kind = if frame.bold { InlineKind::Bold(frame.children) } else { InlineKind::Emphasis(frame.children) };
                 let inline = Inline { kind, span: frame.start..span.end };
-                target(&mut frames, &mut inlines, &mut |out| out.push(inline.clone()));
+                target(&mut frames, &mut inlines).push(inline);
             }
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_) | CodeBlockKind::Indented) | Tag::Table(_)) => {
                 raw = Some(String::new());
@@ -111,15 +115,15 @@ pub(crate) fn parse(text: &str) -> Document {
                 }
             }
             Event::Text(content) => {
-                target(&mut frames, &mut inlines, &mut |out| push_text(out, &content, span.start));
+                push_text(target(&mut frames, &mut inlines), &content, span.start);
             }
             Event::Code(content) => {
                 let inline = Inline { kind: InlineKind::Text(content.to_string()), span };
-                target(&mut frames, &mut inlines, &mut |out| out.push(inline.clone()));
+                target(&mut frames, &mut inlines).push(inline);
             }
             Event::HardBreak => {
                 let inline = Inline { kind: InlineKind::LineBreak, span };
-                target(&mut frames, &mut inlines, &mut |out| out.push(inline.clone()));
+                target(&mut frames, &mut inlines).push(inline);
             }
             Event::End(TagEnd::Paragraph) => {
                 let kind = if list_depth > 0 { BlockKind::ListItem { depth: list_depth } } else { BlockKind::Paragraph };

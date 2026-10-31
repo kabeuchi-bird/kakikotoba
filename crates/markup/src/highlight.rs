@@ -179,7 +179,11 @@ fn paint_nodes(p: &mut Painter, nodes: &[Node], base: Option<Kind>) {
     for node in nodes {
         match node {
             // `[ベース文字]` 単独はページモードに任せ、ただの文字として扱う
-            Node::Text(range) | Node::RubyRef { whole: range, .. } => paint_base(p, range.clone(), base),
+            Node::Text(range) | Node::RubyRef { whole: range, .. } => {
+                if let Some(kind) = base {
+                    p.paint(range.clone(), kind);
+                }
+            }
             Node::Ruby { whole, base: ruby_base, ruby } => {
                 p.paint(whole.clone(), Kind::Delimiter);
                 p.kinds[ruby_base.clone()].fill(base);
@@ -194,12 +198,6 @@ fn paint_nodes(p: &mut Painter, nodes: &[Node], base: Option<Kind>) {
                 paint_nodes(p, children, Some(kind));
             }
         }
-    }
-}
-
-fn paint_base(p: &mut Painter, range: Range<usize>, base: Option<Kind>) {
-    if let Some(kind) = base {
-        p.paint(range, kind);
     }
 }
 

@@ -28,7 +28,7 @@ GUIはSlint（自作ウィジェットへのIME接続口がない）、GTKは採
 crates/
   core/      バッファ、Undo/Redo（操作ログ方式）
   layout/    縦組みレイアウト。入力: テキスト・設定 / 出力: グリフ配置列・カーソル矩形
-  markup/    方言別パーサ → 共通AST（各ノードに元ソースのspanを保持）
+  markup/    方言別パーサ → 共通AST（本文の各ノードに元ソースのspanを保持）
   app/       cxx-qtによるQt統合、UI
 ```
 

@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 
 use kakikotoba_markup::ast::{Block, BlockKind, Document, ImageAlign, Inline, InlineKind};
 
-use crate::{Font, Rect, TCY_BASELINE, kinsoku};
+use crate::{Font, Rect, edge_chars, kinsoku};
 
 /// A判・B判は縦横比が同じ
 const PAGE_ASPECT: f32 = std::f32::consts::SQRT_2;
@@ -31,14 +31,6 @@ pub enum PageFormat {
 }
 
 impl PageFormat {
-    /// 既定の `(字数, 行数)`
-    pub fn default_size(self) -> (usize, usize) {
-        match self {
-            Self::A6 => (39, 17),
-            Self::B6 => (43, 18),
-        }
-    }
-
     /// `(天地の余白, 左右の余白)`。ページの長さに対する片側の比率
     fn margins(self) -> (f32, f32) {
         match self {
@@ -167,6 +159,11 @@ impl PagedDocument {
         let nearest = stops.iter().min_by(|a, b| distance(&a.rect).total_cmp(&distance(&b.rect)))?;
         Some(nearest.source)
     }
+}
+
+/// シェーピング結果を `(dx, dy)` ずらしてページのグリフにする。
+fn glyphs_at(glyphs: &[(u16, f32, f32)], dx: f32, dy: f32, scale: f32, sans: bool) -> impl Iterator<Item = PageGlyph> {
+    glyphs.iter().map(move |&(id, x, y)| PageGlyph { id, x: dx + x, y: dy + y, scale, sans })
 }
 
 /// 列中心・ペン位置からの相対位置で持つ、1単位の組版要素。
@@ -408,16 +405,9 @@ impl<'a, 'f> Flow<'a, 'f> {
         for (i, cluster) in shaped.iter().enumerate() {
             let byte_end = shaped.get(i + 1).map_or(text.len(), |c| c.byte_start);
             let content = &text[cluster.byte_start..byte_end];
-            let first = content.chars().next().unwrap_or(' ');
-            let last = content.chars().next_back().unwrap_or(first);
+            let (first, last) = edge_chars(content);
             let mut piece = Piece::new(first, last, cluster.advance, source + char_index);
-            piece.glyphs.extend(cluster.glyphs.iter().map(|&(id, x, y)| PageGlyph {
-                id,
-                x,
-                y,
-                scale: style.scale,
-                sans: style.sans,
-            }));
+            piece.glyphs.extend(glyphs_at(&cluster.glyphs, 0.0, 0.0, style.scale, style.sans));
             self.decorate(&mut piece, style);
             char_index += content.chars().count();
             out.push(piece);
@@ -430,13 +420,7 @@ impl<'a, 'f> Flow<'a, 'f> {
             let size = style.scale * RUBY_SCALE;
             for cluster in self.serif.shape("﹅", size) {
                 let top = (piece.advance - cluster.advance) / 2.0;
-                piece.glyphs.extend(cluster.glyphs.iter().map(|&(id, x, y)| PageGlyph {
-                    id,
-                    x: style.scale * RUBY_CENTER + x,
-                    y: top + y,
-                    scale: size,
-                    sans: false,
-                }));
+                piece.glyphs.extend(glyphs_at(&cluster.glyphs, style.scale * RUBY_CENTER, top, size, false));
             }
         }
         if style.sideline {
@@ -450,17 +434,10 @@ impl<'a, 'f> Flow<'a, 'f> {
     }
 
     fn ruby(&self, base: &str, ruby: &str, source: usize, style: Style) -> Piece {
-        let first = base.chars().next().unwrap_or(' ');
-        let last = base.chars().next_back().unwrap_or(first);
+        let (first, last) = edge_chars(base);
         let mut piece = Piece::new(first, last, 0.0, source);
         for cluster in self.font(style).shape(base, style.scale) {
-            piece.glyphs.extend(cluster.glyphs.iter().map(|&(id, x, y)| PageGlyph {
-                id,
-                x,
-                y: piece.advance + y,
-                scale: style.scale,
-                sans: style.sans,
-            }));
+            piece.glyphs.extend(glyphs_at(&cluster.glyphs, 0.0, piece.advance, style.scale, style.sans));
             piece.advance += cluster.advance;
         }
         let size = style.scale * RUBY_SCALE;
@@ -468,13 +445,7 @@ impl<'a, 'f> Flow<'a, 'f> {
         let length: f32 = shaped.iter().map(|c| c.advance).sum();
         let mut pen = (piece.advance - length) / 2.0;
         for cluster in shaped {
-            piece.glyphs.extend(cluster.glyphs.iter().map(|&(id, x, y)| PageGlyph {
-                id,
-                x: style.scale * RUBY_CENTER + x,
-                y: pen + y,
-                scale: size,
-                sans: false,
-            }));
+            piece.glyphs.extend(glyphs_at(&cluster.glyphs, style.scale * RUBY_CENTER, pen, size, false));
             pen += cluster.advance;
         }
         if style.sideline {
@@ -485,19 +456,10 @@ impl<'a, 'f> Flow<'a, 'f> {
 
     /// 縦中横。字面に収まるよう縮める。
     fn tcy(&self, text: &str, source: usize, style: Style) -> Piece {
-        let first = text.chars().next().unwrap_or(' ');
-        let last = text.chars().next_back().unwrap_or(first);
-        let mut piece = Piece::new(first, last, style.scale, source);
-        let (glyphs, width) = self.font(style).shape_line(text, style.scale);
-        let fit = (style.scale / width).min(1.0);
-        let baseline = style.scale / 2.0 + TCY_BASELINE * style.scale * fit;
-        piece.glyphs.extend(glyphs.iter().map(|&(id, x, y)| PageGlyph {
-            id,
-            x: (x - width / 2.0) * fit,
-            y: baseline + y * fit,
-            scale: style.scale * fit,
-            sans: style.sans,
-        }));
+        let (first, last) = edge_chars(text);
+        let cluster = self.font(style).shape_tcy(text, style.scale);
+        let mut piece = Piece::new(first, last, cluster.advance, source);
+        piece.glyphs.extend(glyphs_at(&cluster.glyphs, 0.0, 0.0, style.scale * cluster.scale, style.sans));
         self.decorate(&mut piece, Style { emphasis: false, ..style });
         piece
     }
@@ -536,13 +498,7 @@ impl<'a, 'f> Flow<'a, 'f> {
         for (glyphs, _) in shaped.iter().take((self.chars() / line_height) as usize) {
             piece.advance += line_height;
             let baseline = piece.advance;
-            piece.glyphs.extend(glyphs.iter().map(|&(id, x, y)| PageGlyph {
-                id,
-                x: x - block_width / 2.0,
-                y: baseline + y,
-                scale: HORIZONTAL_SCALE,
-                sans: false,
-            }));
+            piece.glyphs.extend(glyphs_at(glyphs, -block_width / 2.0, baseline, HORIZONTAL_SCALE, false));
         }
         self.emit(Column { pieces: vec![piece], width, y_offset: 0.0, source });
     }

@@ -82,7 +82,6 @@ impl Editor {
         let settings = settings_for(0.0);
         let dialect = Dialect::from_path(path.as_deref());
         let layout = Layout::new("", &fonts.serif, settings, &[]);
-        let (chars_per_line, lines_per_page) = PageFormat::A6.default_size();
         let mut editor = Self {
             buffer,
             path,
@@ -100,8 +99,8 @@ impl Editor {
             preferred_y: None,
             page_settings: PageSettings {
                 format: PageFormat::A6,
-                chars_per_line,
-                lines_per_page,
+                chars_per_line: 39,
+                lines_per_page: 17,
                 spread: SpreadMode::LeftStart,
             },
             page_view: None,
@@ -162,7 +161,7 @@ impl Editor {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
     }
 
-    fn caret_index(&self) -> usize {
+    pub fn caret_index(&self) -> usize {
         self.cursor + self.preedit.as_ref().map_or(0, |p| p.cursor)
     }
 
@@ -174,10 +173,6 @@ impl Editor {
     /// 描画用の横棒カーソル（画面座標）。
     pub fn caret_rect(&self) -> Rect {
         Rect { height: CARET_THICKNESS, ..self.cursor_rect() }
-    }
-
-    pub fn cursor_position(&self) -> usize {
-        self.caret_index()
     }
 
     pub fn anchor_position(&self) -> usize {

@@ -133,14 +133,7 @@ pub(crate) fn find(chars: &[char], target: &[char], range: Range<usize>) -> Opti
 }
 
 fn starts_with(chars: &[char], at: usize, target: &str) -> bool {
-    let mut position = at;
-    for c in target.chars() {
-        if chars.get(position) != Some(&c) {
-            return false;
-        }
-        position += 1;
-    }
-    true
+    target.chars().enumerate().all(|(k, c)| chars.get(at + k) == Some(&c))
 }
 
 pub(crate) fn parse_inline(chars: &[char], range: Range<usize>, symbol_forms: bool) -> Vec<Node> {
@@ -284,10 +277,10 @@ pub(crate) fn parse(text: &str, symbol_forms: bool) -> Document {
             Head::Tag { tag: Tag::Start, .. } => in_body = true,
             Head::Tag { tag: Tag::End, .. } => in_body = false,
             Head::Tag { tag: Tag::TnfStart, .. } => in_tnf = true,
-            Head::Tag { tag: Tag::Meta(label), end } => parser.metadata(label, chars, end, *offset),
-            Head::Prefix('-') => parser.metadata("タイトル", chars, 1, *offset),
-            Head::Prefix('$') => parser.metadata("巻数", chars, 1, *offset),
-            Head::Prefix('+') => parser.metadata("筆者", chars, 1, *offset),
+            Head::Tag { tag: Tag::Meta(label), end } => parser.metadata(label, chars, end),
+            Head::Prefix('-') => parser.metadata("タイトル", chars, 1),
+            Head::Prefix('$') => parser.metadata("巻数", chars, 1),
+            Head::Prefix('+') => parser.metadata("筆者", chars, 1),
             _ if in_body => parser.body_line(head, chars, *offset),
             _ => {}
         }
@@ -314,10 +307,9 @@ fn trimmed(chars: &[char], start: usize) -> Range<usize> {
 }
 
 impl Parser {
-    fn metadata(&mut self, label: &'static str, chars: &[char], start: usize, offset: usize) {
+    fn metadata(&mut self, label: &'static str, chars: &[char], start: usize) {
         let value = slice(chars, trimmed(chars, start));
-        let span = offset..offset + chars.len();
-        self.document.metadata.push(Metadata { label, value, span });
+        self.document.metadata.push(Metadata { label, value });
     }
 
     fn raw_paragraph(&mut self, chars: &[char], offset: usize) {
@@ -334,9 +326,10 @@ impl Parser {
         self.document.blocks.push(Block { kind, inlines, span: offset..offset + chars.len() });
     }
 
-    fn inlines(&mut self, chars: &[char], range: Range<usize>, offset: usize) -> Vec<Inline> {
+    fn text_block(&mut self, kind: BlockKind, range: Range<usize>, chars: &[char], offset: usize) {
         let nodes = parse_inline(chars, range, self.symbol_forms);
-        self.convert(&nodes, chars, offset)
+        let inlines = self.convert(&nodes, chars, offset);
+        self.block(kind, inlines, chars, offset);
     }
 
     fn convert(&mut self, nodes: &[Node], chars: &[char], offset: usize) -> Vec<Inline> {
@@ -371,7 +364,6 @@ impl Parser {
     }
 
     fn body_line(&mut self, head: Head, chars: &[char], offset: usize) {
-        let len = chars.len();
         match head {
             Head::Comment | Head::Prefix('%') => {}
             Head::NewPage | Head::Alone(':') | Head::Tag { tag: Tag::NewPage, .. } => {
@@ -383,30 +375,12 @@ impl Parser {
             Head::Alone('}') | Head::Tag { tag: Tag::PageCenterEnd, .. } => {
                 self.block(BlockKind::PageCenterEnd, Vec::new(), chars, offset);
             }
-            Head::PixivChapter { end } => {
-                let inlines = self.inlines(chars, CHAPTER_OPEN..end - 1, offset);
-                self.block(BlockKind::Chapter, inlines, chars, offset);
-            }
-            Head::Prefix('*') => {
-                let inlines = self.inlines(chars, trimmed(chars, 1), offset);
-                self.block(BlockKind::Chapter, inlines, chars, offset);
-            }
-            Head::Prefix(';') => {
-                let inlines = self.inlines(chars, trimmed(chars, 1), offset);
-                self.block(BlockKind::Strong, inlines, chars, offset);
-            }
-            Head::Tag { tag: Tag::Chapter, end } => {
-                let inlines = self.inlines(chars, trimmed(chars, end), offset);
-                self.block(BlockKind::Chapter, inlines, chars, offset);
-            }
-            Head::Tag { tag: Tag::Center, end } => {
-                let inlines = self.inlines(chars, trimmed(chars, end), offset);
-                self.block(BlockKind::Center, inlines, chars, offset);
-            }
-            Head::Tag { tag: Tag::Under, end } => {
-                let inlines = self.inlines(chars, trimmed(chars, end), offset);
-                self.block(BlockKind::Under, inlines, chars, offset);
-            }
+            Head::PixivChapter { end } => self.text_block(BlockKind::Chapter, CHAPTER_OPEN..end - 1, chars, offset),
+            Head::Prefix('*') => self.text_block(BlockKind::Chapter, trimmed(chars, 1), chars, offset),
+            Head::Prefix(';') => self.text_block(BlockKind::Strong, trimmed(chars, 1), chars, offset),
+            Head::Tag { tag: Tag::Chapter, end } => self.text_block(BlockKind::Chapter, trimmed(chars, end), chars, offset),
+            Head::Tag { tag: Tag::Center, end } => self.text_block(BlockKind::Center, trimmed(chars, end), chars, offset),
+            Head::Tag { tag: Tag::Under, end } => self.text_block(BlockKind::Under, trimmed(chars, end), chars, offset),
             Head::Tag { tag: Tag::Image(align), end } => {
                 let source = slice(chars, trimmed(chars, end));
                 self.block(BlockKind::Image { align, source }, Vec::new(), chars, offset);
@@ -417,8 +391,7 @@ impl Parser {
                 if !chars.is_empty() && chars.iter().all(|c| *c == '\u{3000}') {
                     return;
                 }
-                let inlines = self.inlines(chars, 0..len, offset);
-                self.block(BlockKind::Paragraph, inlines, chars, offset);
+                self.text_block(BlockKind::Paragraph, 0..chars.len(), chars, offset);
             }
         }
     }
