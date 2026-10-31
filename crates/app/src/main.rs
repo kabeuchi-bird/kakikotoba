@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::{fs, io};
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 use kakikotoba_core::Buffer;
 use kakikotoba_layout::Font;
 
@@ -58,6 +58,11 @@ fn main() -> ExitCode {
         }
     }
     let mut app = QGuiApplication::new();
+    // QMLのSettingsの保存先を決めるのに必要
+    if let Some(mut app) = app.as_mut() {
+        app.as_mut().set_organization_name(&QString::from("kakikotoba"));
+        app.as_mut().set_application_name(&QString::from("kakikotoba"));
+    }
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
         engine.load(&QUrl::from("qrc:/qt/qml/kakikotoba/qml/main.qml"));

@@ -3,3 +3,6 @@ name = "kakikotoba-markup"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+pulldown-cmark = { version = "0.13.6", default-features = false }

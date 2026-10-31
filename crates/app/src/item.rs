@@ -73,6 +73,7 @@ pub mod qobject {
         fn ignore_key(event: Pin<&mut QKeyEvent>);
         fn mouse_x(event: &QMouseEvent) -> f32;
         fn mouse_y(event: &QMouseEvent) -> f32;
+        fn mouse_left_pressed(event: &QMouseEvent) -> bool;
         fn mouse_shift(event: &QMouseEvent) -> bool;
         fn wheel_delta(event: &QWheelEvent) -> f32;
         fn im_preedit(event: &QInputMethodEvent) -> QString;
@@ -88,6 +89,14 @@ pub mod qobject {
         #[qml_element]
         #[qproperty(QColor, text_color, cxx_name = "textColor")]
         #[qproperty(QColor, selection_color, cxx_name = "selectionColor")]
+        #[qproperty(QColor, delimiter_color, cxx_name = "delimiterColor")]
+        #[qproperty(QColor, tag_color, cxx_name = "tagColor")]
+        #[qproperty(QColor, ruby_color, cxx_name = "rubyColor")]
+        #[qproperty(QColor, emphasis_color, cxx_name = "emphasisColor")]
+        #[qproperty(QColor, sideline_color, cxx_name = "sidelineColor")]
+        #[qproperty(QColor, comment_color, cxx_name = "commentColor")]
+        #[qproperty(QColor, strong_color, cxx_name = "strongColor")]
+        #[qproperty(QColor, code_color, cxx_name = "codeColor")]
         #[qproperty(bool, modified)]
         #[qproperty(bool, has_file, cxx_name = "hasFile")]
         #[qproperty(QString, document_name, cxx_name = "documentName")]
@@ -106,6 +115,10 @@ pub mod qobject {
         fn save_as(self: Pin<&mut VerticalEditor>, url: &QUrl) -> QString;
         #[qinvokable]
         fn open(self: Pin<&mut VerticalEditor>, url: &QUrl) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "setHighlightOptions"]
+        fn set_highlight_options(self: Pin<&mut VerticalEditor>, enabled: bool, symbol_forms: bool);
 
         #[cxx_override]
         unsafe fn paint(self: Pin<&mut VerticalEditor>, painter: *mut QPainter);
@@ -162,6 +175,14 @@ pub fn set_startup_editor(editor: Editor) {
 pub struct VerticalEditorRust {
     text_color: QColor,
     selection_color: QColor,
+    delimiter_color: QColor,
+    tag_color: QColor,
+    ruby_color: QColor,
+    emphasis_color: QColor,
+    sideline_color: QColor,
+    comment_color: QColor,
+    strong_color: QColor,
+    code_color: QColor,
     modified: bool,
     has_file: bool,
     document_name: QString,
@@ -175,6 +196,14 @@ impl Default for VerticalEditorRust {
         Self {
             text_color: QColor::default(),
             selection_color: QColor::default(),
+            delimiter_color: QColor::default(),
+            tag_color: QColor::default(),
+            ruby_color: QColor::default(),
+            emphasis_color: QColor::default(),
+            sideline_color: QColor::default(),
+            comment_color: QColor::default(),
+            strong_color: QColor::default(),
+            code_color: QColor::default(),
             modified: false,
             has_file: false,
             document_name: QString::default(),
@@ -229,6 +258,11 @@ impl qobject::VerticalEditor {
         qobject::update_input_method();
     }
 
+    fn set_highlight_options(mut self: Pin<&mut Self>, enabled: bool, symbol_forms: bool) {
+        self.as_mut().editor_mut().set_highlight_options(enabled, symbol_forms);
+        self.refresh();
+    }
+
     /// ファイル操作の結果をQMLへ返す形にする。
     fn finish_file_operation(self: Pin<&mut Self>, result: Result<(), String>) -> QString {
         self.refresh();
@@ -279,14 +313,30 @@ impl qobject::VerticalEditor {
         }
         fill(rust.editor.caret_rect(), &rust.text_color);
 
-        let mut ids = Vec::new();
-        let mut positions = Vec::new();
-        for (id, x, y) in rust.editor.visible_glyphs() {
+        // 色属性の値は `Kind` の並びに1を足したもの。0は既定の文字色
+        let palette = [
+            &rust.text_color,
+            &rust.delimiter_color,
+            &rust.tag_color,
+            &rust.ruby_color,
+            &rust.emphasis_color,
+            &rust.sideline_color,
+            &rust.comment_color,
+            &rust.strong_color,
+            &rust.code_color,
+        ];
+        let mut batches: [(Vec<u32>, Vec<f32>); 9] = Default::default();
+        for (id, x, y, color) in rust.editor.visible_glyphs() {
+            let (ids, positions) = &mut batches[color as usize];
             ids.push(id);
             positions.extend([x, y]);
         }
         let font = rust.raw_font.as_ref().expect("直前で生成済み");
-        qobject::draw_glyphs(painter.as_mut(), font, &rust.text_color, &ids, &positions);
+        for (color, (ids, positions)) in palette.into_iter().zip(&batches) {
+            if !ids.is_empty() {
+                qobject::draw_glyphs(painter.as_mut(), font, color, ids, positions);
+            }
+        }
     }
 
     unsafe fn key_press_event(mut self: Pin<&mut Self>, event: *mut qobject::QKeyEvent) {
@@ -345,6 +395,9 @@ impl qobject::VerticalEditor {
     unsafe fn mouse_press_event(mut self: Pin<&mut Self>, event: *mut qobject::QMouseEvent) {
         // SAFETY: Qtは配信中有効なイベントを渡す
         let event = unsafe { &*event };
+        if !qobject::mouse_left_pressed(event) {
+            return;
+        }
         qobject::focus_item(self.as_mut());
         let (x, y) = (qobject::mouse_x(event), qobject::mouse_y(event));
         self.as_mut().editor_mut().click(x, y, qobject::mouse_shift(event));
@@ -354,6 +407,9 @@ impl qobject::VerticalEditor {
     unsafe fn mouse_move_event(mut self: Pin<&mut Self>, event: *mut qobject::QMouseEvent) {
         // SAFETY: Qtは配信中有効なイベントを渡す
         let event = unsafe { &*event };
+        if !qobject::mouse_left_pressed(event) {
+            return;
+        }
         let (x, y) = (qobject::mouse_x(event), qobject::mouse_y(event));
         self.as_mut().editor_mut().click(x, y, true);
         self.refresh();

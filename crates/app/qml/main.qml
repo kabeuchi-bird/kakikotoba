@@ -1,3 +1,4 @@
+import QtCore
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Dialogs
@@ -14,6 +15,10 @@ Kirigami.ApplicationWindow {
     title: (editor.modified ? "*" : "") + (editor.documentName || "無題") + " — kakikotoba"
     width: 1000
     height: 800
+
+    function applyHighlightOptions() {
+        editor.setHighlightOptions(settings.highlightEnabled, settings.symbolFormsEnabled);
+    }
 
     function succeeded(error) {
         if (error) {
@@ -57,6 +62,13 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    Settings {
+        id: settings
+        property bool highlightEnabled: true
+        property bool symbolFormsEnabled: true
+        Component.onCompleted: root.applyHighlightOptions()
+    }
+
     pageStack.initialPage: Kirigami.Page {
         padding: 0
         globalToolBarStyle: Kirigami.ApplicationHeaderStyle.None
@@ -68,8 +80,46 @@ Kirigami.ApplicationWindow {
             fillColor: Kirigami.Theme.backgroundColor
             textColor: Kirigami.Theme.textColor
             selectionColor: Kirigami.Theme.highlightColor
+            delimiterColor: Kirigami.Theme.disabledTextColor
+            tagColor: Kirigami.Theme.linkColor
+            rubyColor: Kirigami.Theme.positiveTextColor
+            emphasisColor: Kirigami.Theme.negativeTextColor
+            sidelineColor: Kirigami.Theme.neutralTextColor
+            commentColor: Kirigami.Theme.disabledTextColor
+            strongColor: Kirigami.Theme.linkColor
+            codeColor: Kirigami.Theme.visitedLinkColor
             // Backspaceがウィンドウ側のショートカットに取られると、編集領域へ届かない
             Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Backspace
+
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                onTapped: eventPoint => optionsMenu.popup(eventPoint.position.x, eventPoint.position.y)
+            }
+
+            QQC2.Menu {
+                id: optionsMenu
+                onClosed: editor.forceActiveFocus()
+
+                QQC2.MenuItem {
+                    text: "記法ハイライト"
+                    checkable: true
+                    checked: settings.highlightEnabled
+                    onTriggered: {
+                        settings.highlightEnabled = checked;
+                        root.applyHighlightOptions();
+                    }
+                }
+                QQC2.MenuItem {
+                    text: "PreTNFの記号形式"
+                    checkable: true
+                    checked: settings.symbolFormsEnabled
+                    enabled: settings.highlightEnabled
+                    onTriggered: {
+                        settings.symbolFormsEnabled = checked;
+                        root.applyHighlightOptions();
+                    }
+                }
+            }
         }
     }
 

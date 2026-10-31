@@ -88,6 +88,15 @@ pub struct Glyph {
     pub x: f32,
     pub y: f32,
     pub char_index: usize,
+    /// 色属性。どのランにも含まれなければ0
+    pub color: u8,
+}
+
+/// 色属性のラン。範囲は文字単位で、重ならず、先頭から順に並べる。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub range: Range<usize>,
+    pub color: u8,
 }
 
 /// カーソルが止まれる位置。各段落の末尾には送り量0の要素（改行または文書末）を置く。
@@ -108,7 +117,7 @@ pub struct Layout {
 
 impl Layout {
     // ponytail: 編集のたびに全文を組み直す（20万字で約50ms）。入力が重ければ段落単位のキャッシュへ
-    pub fn new(text: &str, font: &Font, settings: Settings) -> Self {
+    pub fn new(text: &str, font: &Font, settings: Settings, runs: &[Run]) -> Self {
         let mut layout = Self {
             glyphs: Vec::new(),
             settings,
@@ -120,7 +129,19 @@ impl Layout {
             layout.push_paragraph(line.strip_suffix('\r').unwrap_or(line), char_index, font);
             char_index += line.chars().count() + 1;
         }
+        layout.apply_runs(runs);
         layout
+    }
+
+    /// グリフは文字順に並ぶので、ランと並行に進めて色属性を付ける。
+    fn apply_runs(&mut self, runs: &[Run]) {
+        let mut runs = runs.iter().peekable();
+        for glyph in &mut self.glyphs {
+            while runs.next_if(|run| run.range.end <= glyph.char_index).is_some() {}
+            if let Some(run) = runs.peek().filter(|run| run.range.contains(&glyph.char_index)) {
+                glyph.color = run.color;
+            }
+        }
     }
 
     fn push_paragraph(&mut self, text: &str, first_char: usize, font: &Font) {
@@ -150,7 +171,7 @@ impl Layout {
             for (i, cluster) in shaped.iter().enumerate().take(end).skip(start) {
                 self.stops.push(Stop { char_index, column, y, advance: cluster.advance });
                 for &(id, dx, dy) in &cluster.glyphs {
-                    self.glyphs.push(Glyph { id, x: center + dx, y: y + dy, char_index });
+                    self.glyphs.push(Glyph { id, x: center + dx, y: y + dy, char_index, color: 0 });
                 }
                 y += cluster.advance;
                 char_index += text[cluster.byte_start..byte_end(i)].chars().count();
@@ -275,7 +296,7 @@ mod tests {
     #[test]
     fn vert_substitutes_punctuation_and_centers_on_column() {
         with_font(|font| {
-            let layout = Layout::new("。", font, SETTINGS);
+            let layout = Layout::new("。", font, SETTINGS, &[]);
             let mut horizontal = UnicodeBuffer::new();
             horizontal.push_str("。");
             let horizontal = rustybuzz::shape(&font.face, &[], horizontal);
@@ -292,7 +313,7 @@ mod tests {
     fn wraps_with_kinsoku_and_keeps_newlines_as_columns() {
         with_font(|font| {
             let text = "あいうえお。か\n\nき";
-            let layout = Layout::new(text, font, SETTINGS);
+            let layout = Layout::new(text, font, SETTINGS, &[]);
             assert_eq!(layout.column_count(), 4);
             assert_eq!(column_text(&layout, text, 0), "あいうえ");
             assert_eq!(column_text(&layout, text, 1), "お。か");
@@ -304,7 +325,7 @@ mod tests {
     #[test]
     fn cursor_rect_follows_columns() {
         with_font(|font| {
-            let layout = Layout::new("あい\nう", font, SETTINGS);
+            let layout = Layout::new("あい\nう", font, SETTINGS, &[]);
             assert_eq!(layout.cursor_rect(0), Rect { x: -13.0, y: 0.0, width: 10.0, height: 10.0 });
             assert_eq!(layout.cursor_rect(1).y, 10.0);
             // 改行の位置は行末
@@ -318,7 +339,7 @@ mod tests {
     #[test]
     fn up_down_walk_every_position_including_crlf() {
         with_font(|font| {
-            let layout = Layout::new("あ\r\nい", font, SETTINGS);
+            let layout = Layout::new("あ\r\nい", font, SETTINGS, &[]);
             // あ(0) 改行(1,2) い(3) 文書末(4)
             let seen = std::iter::successors(Some(0), |&i| Some(layout.next_char(i)).filter(|&n| n != i));
             assert_eq!(seen.collect::<Vec<_>>(), [0, 1, 3, 4]);
@@ -331,7 +352,7 @@ mod tests {
     #[test]
     fn left_right_keep_height_and_clamp() {
         with_font(|font| {
-            let layout = Layout::new("あいう\nか\nさしす", font, SETTINGS);
+            let layout = Layout::new("あいう\nか\nさしす", font, SETTINGS, &[]);
             // 2列目は短いので行末に寄り、3列目で元の高さへ戻る
             assert_eq!(layout.move_column(2, 1, 20.0), 5);
             assert_eq!(layout.move_column(5, 1, 20.0), 8);
@@ -345,7 +366,7 @@ mod tests {
     #[test]
     fn hit_test_finds_nearest_boundary() {
         with_font(|font| {
-            let layout = Layout::new("あいう\nか", font, SETTINGS);
+            let layout = Layout::new("あいう\nか", font, SETTINGS, &[]);
             assert_eq!(layout.hit_test(-8.0, 12.0), 1);
             assert_eq!(layout.hit_test(-8.0, 16.0), 2);
             assert_eq!(layout.hit_test(-24.0, 0.0), 4);
@@ -358,7 +379,7 @@ mod tests {
     #[test]
     fn selection_spans_columns() {
         with_font(|font| {
-            let layout = Layout::new("あいうえおかき", font, SETTINGS);
+            let layout = Layout::new("あいうえおかき", font, SETTINGS, &[]);
             // あいうえお / かき の いうえおか を選択
             let rects = layout.selection_rects(1..6);
             assert_eq!(rects, [
@@ -370,9 +391,19 @@ mod tests {
     }
 
     #[test]
+    fn runs_color_glyphs_across_newlines() {
+        with_font(|font| {
+            let runs = [Run { range: 1..2, color: 3 }, Run { range: 3..5, color: 7 }];
+            let layout = Layout::new("あい\nうえお", font, SETTINGS, &runs);
+            let colors: Vec<u8> = layout.glyphs.iter().map(|g| g.color).collect();
+            assert_eq!(colors, [0, 3, 7, 7, 0]);
+        });
+    }
+
+    #[test]
     fn empty_text_has_one_position() {
         with_font(|font| {
-            let layout = Layout::new("", font, SETTINGS);
+            let layout = Layout::new("", font, SETTINGS, &[]);
             assert_eq!(layout.column_count(), 1);
             assert_eq!(layout.cursor_rect(0).y, 0.0);
             assert_eq!(layout.next_char(0), 0);

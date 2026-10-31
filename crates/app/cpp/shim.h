@@ -71,6 +71,9 @@ inline void ignore_key(QKeyEvent& event) { event.ignore(); }
 
 inline float mouse_x(const QMouseEvent& event) { return event.position().x(); }
 inline float mouse_y(const QMouseEvent& event) { return event.position().y(); }
+inline bool mouse_left_pressed(const QMouseEvent& event) {
+    return event.buttons().testFlag(Qt::LeftButton);
+}
 inline bool mouse_shift(const QMouseEvent& event) {
     return event.modifiers().testFlag(Qt::ShiftModifier);
 }

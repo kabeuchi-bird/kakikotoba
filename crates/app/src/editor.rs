@@ -5,7 +5,8 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use kakikotoba_core::Buffer;
-use kakikotoba_layout::{Font, Layout, Rect, Settings};
+use kakikotoba_layout::{Font, Layout, Rect, Run, Settings};
+use kakikotoba_markup::highlight::{Dialect, Highlighter, Options};
 
 const MARGIN: f32 = 24.0;
 /// 擬A6（文庫）の既定字数。字サイズはウィンドウの高さから算出する
@@ -28,6 +29,8 @@ pub struct Editor {
     pub font_path: String,
     layout: Layout,
     settings: Settings,
+    highlighter: Highlighter,
+    highlight_enabled: bool,
     width: f32,
     height: f32,
     /// 右方向へのスクロール量。列は左へ進むので、大きいほど後ろの列が見える
@@ -51,14 +54,17 @@ fn settings_for(height: f32) -> Settings {
 impl Editor {
     pub fn new(buffer: Buffer, path: Option<PathBuf>, font: Font<'static>, font_path: String) -> Self {
         let settings = settings_for(0.0);
-        let layout = Layout::new(&buffer.rope().to_string(), &font, settings);
-        Self {
+        let dialect = Dialect::from_path(path.as_deref());
+        let layout = Layout::new("", &font, settings, &[]);
+        let mut editor = Self {
             buffer,
             path,
             font,
             font_path,
             layout,
             settings,
+            highlighter: Highlighter::new(Options { dialect, symbol_forms: true }),
+            highlight_enabled: true,
             width: 0.0,
             height: 0.0,
             scroll: 0.0,
@@ -66,7 +72,9 @@ impl Editor {
             anchor: None,
             preedit: None,
             preferred_y: None,
-        }
+        };
+        editor.relayout();
+        editor
     }
 
     pub fn font_size(&self) -> f32 {
@@ -92,7 +100,14 @@ impl Editor {
         if let Some(preedit) = &self.preedit {
             text.insert(self.cursor, &preedit.text);
         }
-        self.layout = Layout::new(&text.to_string(), &self.font, self.settings);
+        let text = text.to_string();
+        let mut runs = Vec::new();
+        if self.highlight_enabled {
+            self.highlighter.update(&text);
+            // 色0は既定の文字色
+            runs.extend(self.highlighter.spans().map(|span| Run { range: span.range, color: span.kind as u8 + 1 }));
+        }
+        self.layout = Layout::new(&text, &self.font, self.settings, &runs);
     }
 
     fn to_screen(&self, rect: Rect) -> Rect {
@@ -140,13 +155,13 @@ impl Editor {
         self.anchor.unwrap_or(self.caret_index())
     }
 
-    /// 画面内のグリフを `(番号, x, y)` で返す。
-    pub fn visible_glyphs(&self) -> impl Iterator<Item = (u32, f32, f32)> + '_ {
+    /// 画面内のグリフを `(番号, x, y, 色属性)` で返す。
+    pub fn visible_glyphs(&self) -> impl Iterator<Item = (u32, f32, f32, u8)> + '_ {
         let offset_x = self.width - MARGIN + self.scroll;
         let (left, right) = (-self.settings.column_pitch, self.width + self.settings.column_pitch);
         self.layout.glyphs.iter().filter_map(move |g| {
             let x = g.x + offset_x;
-            (left..right).contains(&x).then_some((g.id as u32, x, g.y + MARGIN))
+            (left..right).contains(&x).then_some((g.id as u32, x, g.y + MARGIN, g.color))
         })
     }
 
@@ -323,13 +338,30 @@ impl Editor {
     pub fn save_as(&mut self, path: PathBuf) -> io::Result<()> {
         self.buffer.save(&path)?;
         self.path = Some(path);
+        self.update_highlighter(self.highlighter.options().symbol_forms);
+        self.relayout();
         Ok(())
+    }
+
+    pub fn set_highlight_options(&mut self, enabled: bool, symbol_forms: bool) {
+        self.highlight_enabled = enabled;
+        self.update_highlighter(symbol_forms);
+        self.relayout();
+    }
+
+    /// 方言や記号形式が変わったときだけ解析結果を捨てる。
+    fn update_highlighter(&mut self, symbol_forms: bool) {
+        let options = Options { dialect: Dialect::from_path(self.path.as_deref()), symbol_forms };
+        if options != self.highlighter.options() {
+            self.highlighter = Highlighter::new(options);
+        }
     }
 
     /// 読み込みに失敗したら、編集中の文書はそのまま残す。
     pub fn open(&mut self, path: PathBuf) -> io::Result<()> {
         self.buffer = Buffer::load(&path)?;
         self.path = Some(path);
+        self.update_highlighter(self.highlighter.options().symbol_forms);
         self.scroll = 0.0;
         self.preedit = None;
         self.edited(0);
@@ -340,6 +372,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kakikotoba_markup::highlight::Kind;
 
     fn with_editor(text: &str, test: impl FnOnce(&mut Editor)) {
         let path = "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc";
@@ -478,6 +511,53 @@ mod tests {
             assert_eq!(e.cursor, 0);
             assert_eq!(e.buffer.undo(), None);
 
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    fn colors(editor: &Editor) -> Vec<u8> {
+        editor.visible_glyphs().map(|(_, _, _, color)| color).collect()
+    }
+
+    #[test]
+    fn highlight_follows_edits_options_and_preedit() {
+        with_editor("!あ", |e| {
+            let comment = Kind::Comment as u8 + 1;
+            assert_eq!(colors(e), [comment, comment]);
+
+            e.set_highlight_options(true, false);
+            assert_eq!(colors(e), [0, 0]);
+            e.set_highlight_options(false, true);
+            assert_eq!(colors(e), [0, 0]);
+            e.set_highlight_options(true, true);
+            assert_eq!(colors(e), [comment, comment]);
+
+            // 編集とUndo、変換中の文字にも追従する
+            e.backspace();
+            e.delete();
+            assert_eq!(colors(e), [0]);
+            e.undo();
+            assert_eq!(colors(e), [comment, comment]);
+            e.set_preedit("か", None);
+            assert_eq!(colors(e), [comment, comment, comment]);
+        });
+    }
+
+    #[test]
+    fn dialect_follows_saved_and_opened_file() {
+        with_editor("*強調*", |e| {
+            let dir = std::env::temp_dir().join(format!("kakikotoba-dialect-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let (emphasis, delimiter, tag) = (Kind::Emphasis as u8 + 1, Kind::Delimiter as u8 + 1, Kind::Tag as u8 + 1);
+            assert_eq!(colors(e), [tag, 0, 0, 0]);
+
+            e.save_as(dir.join("a.md")).unwrap();
+            assert_eq!(colors(e), [delimiter, emphasis, emphasis, delimiter]);
+
+            let txt = dir.join("b.txt");
+            std::fs::write(&txt, "*強調*").unwrap();
+            e.open(txt).unwrap();
+            assert_eq!(colors(e), [tag, 0, 0, 0]);
             std::fs::remove_dir_all(&dir).unwrap();
         });
     }
