@@ -44,7 +44,7 @@ crates/
   - 縦組み、縦用字形（`vert`）、禁則処理
   - カーソル移動: ↑↓は文字単位、←→は列単位
   - 選択、Undo/Redo、保存
-  - IME: `inputMethodQuery(ImCursorRectangle)` で縦長カーソル矩形を返す。preeditも縦組みで描画。fcitx5上の候補窓位置を早期に検証する
+  - IME: `inputMethodQuery(ImCursorRectangle)` で字面1字分のカーソル矩形を返す（fcitx5上で候補窓位置を確認済み）。preeditも縦組みで描画
 - 次段階: 縦中横（半角数字2〜3桁の自動判定）、欧文の90°回転、ぶら下げ
 
 #### 記法ハイライト
