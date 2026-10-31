@@ -51,6 +51,19 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    function newDocument() {
+        afterConfirmingUnsaved(() => editor.newDocument());
+    }
+
+    function openDocument() {
+        afterConfirmingUnsaved(() => openDialog.open());
+    }
+
+    function showMetadata() {
+        metadataDialog.subtitle = editor.metadataText() || "文書情報はありません";
+        metadataDialog.open();
+    }
+
     function afterConfirmingUnsaved(action) {
         pendingAction = action;
         if (editor.modified) {
@@ -67,6 +80,144 @@ Kirigami.ApplicationWindow {
                 closeConfirmed = true;
                 root.close();
             });
+        }
+    }
+
+    /// 閉じたら編集領域へ入力を戻すメニュー
+    component RestoringMenu: QQC2.Menu {
+        onClosed: editor.forceActiveFocus()
+    }
+
+    /// ショートカットを右端に示すメニュー項目
+    component CommandItem: QQC2.MenuItem {
+        id: commandItem
+        property string shortcutText
+
+        contentItem: RowLayout {
+            spacing: Kirigami.Units.gridUnit
+            QQC2.Label {
+                Layout.fillWidth: true
+                // 内容を差し替えると、チェックボックスの分の余白が自動では空かない
+                Layout.leftMargin: commandItem.checkable && commandItem.indicator
+                    ? commandItem.indicator.width + commandItem.spacing : 0
+                text: commandItem.text
+                enabled: commandItem.enabled
+            }
+            QQC2.Label {
+                text: commandItem.shortcutText
+                enabled: commandItem.enabled
+                opacity: 0.7
+            }
+        }
+    }
+
+    menuBar: QQC2.MenuBar {
+        RestoringMenu {
+            title: "ファイル(&F)"
+            CommandItem {
+                text: "新規"
+                shortcutText: "Ctrl+N"
+                onTriggered: root.newDocument()
+            }
+            CommandItem {
+                text: "開く…"
+                shortcutText: "Ctrl+O"
+                onTriggered: root.openDocument()
+            }
+            QQC2.MenuSeparator {}
+            CommandItem {
+                text: "保存"
+                shortcutText: "Ctrl+S"
+                onTriggered: root.save()
+            }
+            CommandItem {
+                text: "名前を付けて保存…"
+                shortcutText: "Ctrl+Shift+S"
+                onTriggered: saveDialog.open()
+            }
+            QQC2.MenuSeparator {}
+            CommandItem {
+                text: "終了"
+                shortcutText: "Ctrl+Q"
+                onTriggered: root.close()
+            }
+        }
+        RestoringMenu {
+            title: "編集(&E)"
+            CommandItem {
+                text: "元に戻す"
+                shortcutText: "Ctrl+Z"
+                enabled: editor.canUndo
+                onTriggered: editor.undo()
+            }
+            CommandItem {
+                text: "やり直す"
+                shortcutText: "Ctrl+Y"
+                enabled: editor.canRedo
+                onTriggered: editor.redo()
+            }
+            QQC2.MenuSeparator {}
+            CommandItem {
+                text: "切り取り"
+                shortcutText: "Ctrl+X"
+                enabled: editor.hasSelection
+                onTriggered: editor.cut()
+            }
+            CommandItem {
+                text: "コピー"
+                shortcutText: "Ctrl+C"
+                enabled: editor.hasSelection
+                onTriggered: editor.copy()
+            }
+            CommandItem {
+                text: "貼り付け"
+                shortcutText: "Ctrl+V"
+                enabled: !editor.pageMode
+                onTriggered: editor.paste()
+            }
+            QQC2.MenuSeparator {}
+            CommandItem {
+                text: "すべて選択"
+                shortcutText: "Ctrl+A"
+                enabled: !editor.pageMode
+                onTriggered: editor.selectAll()
+            }
+        }
+        RestoringMenu {
+            title: "表示(&V)"
+            CommandItem {
+                text: editor.pageMode ? "編集モードへ" : "ページ表示"
+                shortcutText: "F5"
+                onTriggered: editor.togglePageMode()
+            }
+            CommandItem {
+                text: "ページ設定…"
+                onTriggered: pageSettingsDialog.open()
+            }
+            CommandItem {
+                text: "文書情報…"
+                onTriggered: root.showMetadata()
+            }
+            QQC2.MenuSeparator {}
+            CommandItem {
+                text: "記法ハイライト"
+                checkable: true
+                checked: settings.highlightEnabled
+                onTriggered: {
+                    settings.highlightEnabled = checked;
+                    root.applyHighlightOptions();
+                }
+            }
+            CommandItem {
+                text: "PreTNFの記号形式"
+                checkable: true
+                checked: settings.symbolFormsEnabled
+                enabled: settings.highlightEnabled
+                onTriggered: {
+                    settings.symbolFormsEnabled = checked;
+                    root.applyHighlightOptions();
+                }
+            }
         }
     }
 
@@ -116,62 +267,83 @@ Kirigami.ApplicationWindow {
                 onTapped: eventPoint => optionsMenu.popup(eventPoint.position.x, eventPoint.position.y)
             }
 
-            QQC2.Menu {
+            RestoringMenu {
                 id: optionsMenu
-                onClosed: editor.forceActiveFocus()
 
-                QQC2.MenuItem {
-                    text: editor.pageMode ? "編集モードへ (F5)" : "ページ表示 (F5)"
-                    onTriggered: editor.togglePageMode()
+                CommandItem {
+                    text: "切り取り"
+                    shortcutText: "Ctrl+X"
+                    enabled: editor.hasSelection
+                    onTriggered: editor.cut()
                 }
-                QQC2.MenuItem {
-                    text: "ページ設定…"
-                    onTriggered: pageSettingsDialog.open()
+                CommandItem {
+                    text: "コピー"
+                    shortcutText: "Ctrl+C"
+                    enabled: editor.hasSelection
+                    onTriggered: editor.copy()
                 }
-                QQC2.MenuItem {
-                    text: "文書情報…"
-                    onTriggered: {
-                        metadataDialog.subtitle = editor.metadataText() || "文書情報はありません";
-                        metadataDialog.open();
-                    }
+                CommandItem {
+                    text: "貼り付け"
+                    shortcutText: "Ctrl+V"
+                    enabled: !editor.pageMode
+                    onTriggered: editor.paste()
                 }
                 QQC2.MenuSeparator {}
-                QQC2.MenuItem {
-                    text: "記法ハイライト"
-                    checkable: true
-                    checked: settings.highlightEnabled
-                    onTriggered: {
-                        settings.highlightEnabled = checked;
-                        root.applyHighlightOptions();
-                    }
-                }
-                QQC2.MenuItem {
-                    text: "PreTNFの記号形式"
-                    checkable: true
-                    checked: settings.symbolFormsEnabled
-                    enabled: settings.highlightEnabled
-                    onTriggered: {
-                        settings.symbolFormsEnabled = checked;
-                        root.applyHighlightOptions();
-                    }
+                CommandItem {
+                    text: editor.pageMode ? "編集モードへ" : "ページ表示"
+                    shortcutText: "F5"
+                    onTriggered: editor.togglePageMode()
                 }
             }
         }
     }
 
+    // メニューの表示と揃えるため明示する。StandardKeyはテーマによって割り当てが異なる
     Shortcut {
-        sequences: [StandardKey.Open]
-        onActivated: root.afterConfirmingUnsaved(() => openDialog.open())
+        sequence: "Ctrl+N"
+        onActivated: root.newDocument()
     }
     Shortcut {
-        sequences: [StandardKey.Save]
+        sequence: "Ctrl+O"
+        onActivated: root.openDocument()
+    }
+    Shortcut {
+        sequence: "Ctrl+S"
         onActivated: root.save()
     }
     Shortcut {
-        sequences: [StandardKey.SaveAs]
+        sequence: "Ctrl+Shift+S"
         onActivated: saveDialog.open()
     }
 
+    Shortcut {
+        sequence: "Ctrl+Q"
+        onActivated: root.close()
+    }
+    Shortcut {
+        sequence: "Ctrl+Z"
+        onActivated: editor.undo()
+    }
+    Shortcut {
+        sequences: ["Ctrl+Y", "Ctrl+Shift+Z"]
+        onActivated: editor.redo()
+    }
+    Shortcut {
+        sequence: "Ctrl+X"
+        onActivated: editor.cut()
+    }
+    Shortcut {
+        sequence: "Ctrl+C"
+        onActivated: editor.copy()
+    }
+    Shortcut {
+        sequence: "Ctrl+V"
+        onActivated: editor.paste()
+    }
+    Shortcut {
+        sequence: "Ctrl+A"
+        onActivated: editor.selectAll()
+    }
     Shortcut {
         sequence: "F5"
         onActivated: editor.togglePageMode()

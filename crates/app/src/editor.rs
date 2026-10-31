@@ -459,14 +459,40 @@ impl Editor {
 
     /// 読み込みに失敗したら、編集中の文書はそのまま残す。
     pub fn open(&mut self, path: PathBuf) -> io::Result<()> {
-        self.buffer = Buffer::load(&path)?;
+        let buffer = Buffer::load(&path)?;
+        self.replace_document(buffer, Some(path));
+        Ok(())
+    }
+
+    pub fn new_document(&mut self) {
+        self.replace_document(Buffer::new(""), None);
+    }
+
+    fn replace_document(&mut self, buffer: Buffer, path: Option<PathBuf>) {
+        self.buffer = buffer;
         self.page_view = None;
-        self.path = Some(path);
+        self.path = path;
         self.update_highlighter(self.highlighter.options().symbol_forms);
         self.scroll = 0.0;
         self.preedit = None;
         self.edited(0);
-        Ok(())
+    }
+
+    /// 編集の操作を受け付けられるか。
+    pub fn is_editable(&self) -> bool {
+        self.page_view.is_none() && !self.is_composing()
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.is_editable() && self.buffer.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.is_editable() && self.buffer.can_redo()
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.is_editable() && self.selection().is_some()
     }
 }
 
@@ -766,6 +792,43 @@ mod tests {
             assert_eq!(view.image_path("a.jpg"), dir.join("a.jpg"));
             assert_eq!(view.image_path("/x/a.jpg"), PathBuf::from("/x/a.jpg"));
             std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn new_document_clears_text_path_and_history() {
+        with_editor("あ", |e| {
+            let dir = std::env::temp_dir().join(format!("kakikotoba-new-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            e.save_as(dir.join("a.md")).unwrap();
+            e.insert("い");
+            e.toggle_page_mode();
+            e.new_document();
+            assert_eq!(text(e), "");
+            assert!(!e.has_file() && !e.is_modified() && !e.can_undo());
+            assert!(e.page_view().is_none());
+            // 新規文書はPreTNFに戻る
+            assert_eq!(e.markup_options().dialect, Dialect::PreTnf);
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn edit_commands_are_unavailable_in_page_mode_and_while_composing() {
+        with_editor("あ", |e| {
+            e.select_all();
+            e.insert("い");
+            e.select_all();
+            assert!(e.can_undo() && e.has_selection() && e.is_editable());
+
+            e.toggle_page_mode();
+            assert!(!e.can_undo() && !e.has_selection() && !e.is_editable());
+            e.toggle_page_mode();
+
+            e.undo();
+            assert!(e.can_redo());
+            e.set_preedit("か", None);
+            assert!(!e.can_undo() && !e.can_redo() && !e.is_editable());
         });
     }
 

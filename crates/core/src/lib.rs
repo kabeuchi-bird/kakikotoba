@@ -89,6 +89,14 @@ impl Buffer {
         &self.rope
     }
 
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
     pub fn is_modified(&self) -> bool {
         self.saved_depth != Some(self.undo.len())
     }
@@ -148,7 +156,9 @@ mod tests {
         assert_eq!(b.rope().to_string(), "吾輩は犬である");
         assert_eq!(b.undo(), Some(4));
         assert_eq!(b.rope().to_string(), "吾輩は猫");
+        assert!(b.can_redo());
         assert_eq!(b.redo(), Some(7));
+        assert!(b.can_undo() && !b.can_redo());
         assert_eq!(b.rope().to_string(), "吾輩は犬である");
         assert_eq!(b.redo(), None);
     }

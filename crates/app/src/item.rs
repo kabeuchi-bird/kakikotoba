@@ -119,6 +119,9 @@ pub mod qobject {
         #[qproperty(QColor, paper_color, cxx_name = "paperColor")]
         #[qproperty(bool, page_mode, cxx_name = "pageMode")]
         #[qproperty(QString, page_label, cxx_name = "pageLabel")]
+        #[qproperty(bool, can_undo, cxx_name = "canUndo")]
+        #[qproperty(bool, can_redo, cxx_name = "canRedo")]
+        #[qproperty(bool, has_selection, cxx_name = "hasSelection")]
         #[qproperty(bool, modified)]
         #[qproperty(bool, has_file, cxx_name = "hasFile")]
         #[qproperty(QString, document_name, cxx_name = "documentName")]
@@ -128,6 +131,23 @@ pub mod qobject {
         fn size(self: &VerticalEditor) -> QSizeF;
         #[inherit]
         fn update(self: Pin<&mut VerticalEditor>);
+
+        #[qinvokable]
+        #[cxx_name = "newDocument"]
+        fn new_document(self: Pin<&mut VerticalEditor>);
+        #[qinvokable]
+        fn undo(self: Pin<&mut VerticalEditor>);
+        #[qinvokable]
+        fn redo(self: Pin<&mut VerticalEditor>);
+        #[qinvokable]
+        fn cut(self: Pin<&mut VerticalEditor>);
+        #[qinvokable]
+        fn copy(self: Pin<&mut VerticalEditor>);
+        #[qinvokable]
+        fn paste(self: Pin<&mut VerticalEditor>);
+        #[qinvokable]
+        #[cxx_name = "selectAll"]
+        fn select_all(self: Pin<&mut VerticalEditor>);
 
         // 以下の3つは失敗時にエラーメッセージ、成功時に空文字列を返す
         #[qinvokable]
@@ -193,12 +213,6 @@ const KEY_DOWN: i32 = 0x0100_0015;
 const KEY_PAGE_UP: i32 = 0x0100_0016;
 const KEY_PAGE_DOWN: i32 = 0x0100_0017;
 const KEY_SPACE: i32 = 0x20;
-const KEY_A: i32 = 0x41;
-const KEY_C: i32 = 0x43;
-const KEY_V: i32 = 0x56;
-const KEY_X: i32 = 0x58;
-const KEY_Y: i32 = 0x59;
-const KEY_Z: i32 = 0x5A;
 const SHIFT: i32 = 0x0200_0000;
 const CONTROL: i32 = 0x0400_0000;
 const ALT: i32 = 0x0800_0000;
@@ -224,6 +238,9 @@ pub struct VerticalEditorRust {
     strong_color: QColor,
     code_color: QColor,
     paper_color: QColor,
+    can_undo: bool,
+    can_redo: bool,
+    has_selection: bool,
     page_mode: bool,
     page_label: QString,
     modified: bool,
@@ -250,6 +267,9 @@ impl Default for VerticalEditorRust {
             strong_color: QColor::default(),
             code_color: QColor::default(),
             paper_color: QColor::default(),
+            can_undo: false,
+            can_redo: false,
+            has_selection: false,
             page_mode: false,
             page_label: QString::default(),
             modified: false,
@@ -357,8 +377,12 @@ impl qobject::VerticalEditor {
         let editor = &self.rust().editor;
         let (modified, has_file) = (editor.is_modified(), editor.has_file());
         let name = QString::from(editor.document_name().as_str());
+        let (can_undo, can_redo, has_selection) = (editor.can_undo(), editor.can_redo(), editor.has_selection());
         let page_mode = editor.page_view().is_some();
         let page_label = QString::from(editor.page_view().map_or(String::new(), |view| view.label()).as_str());
+        self.as_mut().set_can_undo(can_undo);
+        self.as_mut().set_can_redo(can_redo);
+        self.as_mut().set_has_selection(has_selection);
         self.as_mut().set_page_mode(page_mode);
         self.as_mut().set_page_label(page_label);
         self.as_mut().set_modified(modified);
@@ -376,6 +400,58 @@ impl qobject::VerticalEditor {
     fn set_highlight_options(mut self: Pin<&mut Self>, enabled: bool, symbol_forms: bool) {
         self.as_mut().editor_mut().set_highlight_options(enabled, symbol_forms);
         self.refresh();
+    }
+
+    /// 編集できる状態なら操作を実行し、結果を反映する。
+    fn edit_command(mut self: Pin<&mut Self>, command: impl FnOnce(&mut Editor)) {
+        let editor = self.as_mut().editor_mut();
+        if editor.is_editable() {
+            command(editor);
+        }
+        self.refresh();
+    }
+
+    fn new_document(mut self: Pin<&mut Self>) {
+        self.as_mut().editor_mut().new_document();
+        self.refresh();
+    }
+
+    fn undo(self: Pin<&mut Self>) {
+        self.edit_command(Editor::undo);
+    }
+
+    fn redo(self: Pin<&mut Self>) {
+        self.edit_command(Editor::redo);
+    }
+
+    fn cut(self: Pin<&mut Self>) {
+        self.edit_command(|editor| {
+            if let Some(text) = editor.selected_text() {
+                qobject::set_clipboard_text(&QString::from(text.as_str()));
+                editor.delete();
+            }
+        });
+    }
+
+    fn copy(self: Pin<&mut Self>) {
+        self.edit_command(|editor| {
+            if let Some(text) = editor.selected_text() {
+                qobject::set_clipboard_text(&QString::from(text.as_str()));
+            }
+        });
+    }
+
+    fn paste(self: Pin<&mut Self>) {
+        self.edit_command(|editor| {
+            let text = String::from(&qobject::clipboard_text());
+            if !text.is_empty() {
+                editor.insert(&text);
+            }
+        });
+    }
+
+    fn select_all(self: Pin<&mut Self>) {
+        self.edit_command(Editor::select_all);
     }
 
     fn toggle_page_mode(mut self: Pin<&mut Self>) {
@@ -484,7 +560,6 @@ impl qobject::VerticalEditor {
         let modifiers = qobject::key_modifiers(&event);
         let text = String::from(&qobject::key_text(&event));
         let extend = modifiers & SHIFT != 0;
-        let control = modifiers & CONTROL != 0;
         let editor = self.as_mut().editor_mut();
 
         if let Some(view) = editor.page_view_mut() {
@@ -513,27 +588,6 @@ impl qobject::VerticalEditor {
             KEY_BACKSPACE => { editor.backspace(); true }
             KEY_DELETE => { editor.delete(); true }
             KEY_RETURN | KEY_ENTER => { editor.insert("\n"); true }
-            KEY_Z if control && extend => { editor.redo(); true }
-            KEY_Z if control => { editor.undo(); true }
-            KEY_Y if control => { editor.redo(); true }
-            KEY_A if control => { editor.select_all(); true }
-            KEY_C if control => {
-                if let Some(text) = editor.selected_text() {
-                    qobject::set_clipboard_text(&QString::from(text.as_str()));
-                }
-                true
-            }
-            KEY_X if control => {
-                if let Some(text) = editor.selected_text() {
-                    qobject::set_clipboard_text(&QString::from(text.as_str()));
-                    editor.delete();
-                }
-                true
-            }
-            KEY_V if control => {
-                editor.insert(&String::from(&qobject::clipboard_text()));
-                true
-            }
             _ if modifiers & (CONTROL | ALT) == 0 && text.chars().all(|c| !c.is_control()) && !text.is_empty() => {
                 editor.insert(&text);
                 true
