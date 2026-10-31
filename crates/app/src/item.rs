@@ -1,11 +1,12 @@
 //! 縦書き編集領域のQtアイテム。Qtのイベントを `Editor` の操作へ変換し、描画する。
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::pin::Pin;
 
 use cxx::UniquePtr;
 use cxx_qt::CxxQtType;
-use cxx_qt_lib::{QColor, QRectF, QString, QVariant};
+use cxx_qt_lib::{QColor, QRectF, QString, QUrl, QVariant};
 use kakikotoba_layout::Rect;
 
 use crate::editor::Editor;
@@ -36,6 +37,8 @@ pub mod qobject {
         type QSizeF = cxx_qt_lib::QSizeF;
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
+        include!("cxx-qt-lib/qurl.h");
+        type QUrl = cxx_qt_lib::QUrl;
         include!("cxx-qt-lib/qvariant.h");
         type QVariant = cxx_qt_lib::QVariant;
 
@@ -53,6 +56,8 @@ pub mod qobject {
         fn init_item(item: Pin<&mut VerticalEditor>);
         fn focus_item(item: Pin<&mut VerticalEditor>);
         fn update_input_method();
+        fn clipboard_text() -> QString;
+        fn set_clipboard_text(text: &QString);
         fn new_raw_font(path: &QString, pixel_size: f64) -> UniquePtr<QRawFont>;
         fn draw_glyphs(
             painter: Pin<&mut QPainter>,
@@ -83,12 +88,24 @@ pub mod qobject {
         #[qml_element]
         #[qproperty(QColor, text_color, cxx_name = "textColor")]
         #[qproperty(QColor, selection_color, cxx_name = "selectionColor")]
+        #[qproperty(bool, modified)]
+        #[qproperty(bool, has_file, cxx_name = "hasFile")]
+        #[qproperty(QString, document_name, cxx_name = "documentName")]
         type VerticalEditor = super::VerticalEditorRust;
 
         #[inherit]
         fn size(self: &VerticalEditor) -> QSizeF;
         #[inherit]
         fn update(self: Pin<&mut VerticalEditor>);
+
+        // 以下の3つは失敗時にエラーメッセージ、成功時に空文字列を返す
+        #[qinvokable]
+        fn save(self: Pin<&mut VerticalEditor>) -> QString;
+        #[qinvokable]
+        #[cxx_name = "saveAs"]
+        fn save_as(self: Pin<&mut VerticalEditor>, url: &QUrl) -> QString;
+        #[qinvokable]
+        fn open(self: Pin<&mut VerticalEditor>, url: &QUrl) -> QString;
 
         #[cxx_override]
         unsafe fn paint(self: Pin<&mut VerticalEditor>, painter: *mut QPainter);
@@ -123,7 +140,10 @@ const KEY_LEFT: i32 = 0x0100_0012;
 const KEY_UP: i32 = 0x0100_0013;
 const KEY_RIGHT: i32 = 0x0100_0014;
 const KEY_DOWN: i32 = 0x0100_0015;
-const KEY_S: i32 = 0x53;
+const KEY_A: i32 = 0x41;
+const KEY_C: i32 = 0x43;
+const KEY_V: i32 = 0x56;
+const KEY_X: i32 = 0x58;
 const KEY_Y: i32 = 0x59;
 const KEY_Z: i32 = 0x5A;
 const SHIFT: i32 = 0x0200_0000;
@@ -142,6 +162,9 @@ pub fn set_startup_editor(editor: Editor) {
 pub struct VerticalEditorRust {
     text_color: QColor,
     selection_color: QColor,
+    modified: bool,
+    has_file: bool,
+    document_name: QString,
     editor: Editor,
     raw_font: UniquePtr<qobject::QRawFont>,
     raw_font_size: f32,
@@ -152,6 +175,9 @@ impl Default for VerticalEditorRust {
         Self {
             text_color: QColor::default(),
             selection_color: QColor::default(),
+            modified: false,
+            has_file: false,
+            document_name: QString::default(),
             // ponytail: 1ウィンドウ1文書。複数文書を開くならアイテムのプロパティで渡す
             editor: STARTUP_EDITOR.take().expect("VerticalEditorは1つだけ生成する"),
             raw_font: UniquePtr::null(),
@@ -161,9 +187,15 @@ impl Default for VerticalEditorRust {
 }
 
 impl cxx_qt::Initialize for qobject::VerticalEditor {
-    fn initialize(self: Pin<&mut Self>) {
-        qobject::init_item(self);
+    fn initialize(mut self: Pin<&mut Self>) {
+        qobject::init_item(self.as_mut());
+        self.sync_properties();
     }
+}
+
+fn local_path(url: &QUrl) -> Result<PathBuf, String> {
+    let path = url.to_local_file().ok_or("ローカルファイルではありません")?;
+    Ok(PathBuf::from(String::from(&path)))
 }
 
 fn utf16_to_chars(text: &str, utf16: usize) -> usize {
@@ -181,10 +213,45 @@ impl qobject::VerticalEditor {
         &mut self.rust_mut().get_mut().editor
     }
 
-    /// 操作の結果を画面とIMEへ反映する。
-    fn refresh(self: Pin<&mut Self>) {
+    fn sync_properties(mut self: Pin<&mut Self>) {
+        let editor = &self.rust().editor;
+        let (modified, has_file) = (editor.is_modified(), editor.has_file());
+        let name = QString::from(editor.document_name().as_str());
+        self.as_mut().set_modified(modified);
+        self.as_mut().set_has_file(has_file);
+        self.as_mut().set_document_name(name);
+    }
+
+    /// 操作の結果を画面、QMLのプロパティ、IMEへ反映する。
+    fn refresh(mut self: Pin<&mut Self>) {
+        self.as_mut().sync_properties();
         self.update();
         qobject::update_input_method();
+    }
+
+    /// ファイル操作の結果をQMLへ返す形にする。
+    fn finish_file_operation(self: Pin<&mut Self>, result: Result<(), String>) -> QString {
+        self.refresh();
+        QString::from(result.err().unwrap_or_default().as_str())
+    }
+
+    fn save(mut self: Pin<&mut Self>) -> QString {
+        let result = self.as_mut().editor_mut().save();
+        self.finish_file_operation(result.map_err(|e| format!("保存できません: {e}")))
+    }
+
+    fn save_as(mut self: Pin<&mut Self>, url: &QUrl) -> QString {
+        let result = local_path(url)
+            .and_then(|path| self.as_mut().editor_mut().save_as(path).map_err(|e| e.to_string()))
+            .map_err(|e| format!("保存できません: {e}"));
+        self.finish_file_operation(result)
+    }
+
+    fn open(mut self: Pin<&mut Self>, url: &QUrl) -> QString {
+        let result = local_path(url)
+            .and_then(|path| self.as_mut().editor_mut().open(path).map_err(|e| e.to_string()))
+            .map_err(|e| format!("開けません: {e}"));
+        self.finish_file_operation(result)
     }
 
     unsafe fn paint(mut self: Pin<&mut Self>, painter: *mut qobject::QPainter) {
@@ -244,10 +311,22 @@ impl qobject::VerticalEditor {
             KEY_Z if control && extend => { editor.redo(); true }
             KEY_Z if control => { editor.undo(); true }
             KEY_Y if control => { editor.redo(); true }
-            KEY_S if control => {
-                if let Err(e) = editor.save() {
-                    eprintln!("kakikotoba: 保存できません: {e}");
+            KEY_A if control => { editor.select_all(); true }
+            KEY_C if control => {
+                if let Some(text) = editor.selected_text() {
+                    qobject::set_clipboard_text(&QString::from(text.as_str()));
                 }
+                true
+            }
+            KEY_X if control => {
+                if let Some(text) = editor.selected_text() {
+                    qobject::set_clipboard_text(&QString::from(text.as_str()));
+                    editor.delete();
+                }
+                true
+            }
+            KEY_V if control => {
+                editor.insert(&String::from(&qobject::clipboard_text()));
                 true
             }
             _ if modifiers & (CONTROL | ALT) == 0 && text.chars().all(|c| !c.is_control()) && !text.is_empty() => {

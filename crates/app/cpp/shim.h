@@ -1,6 +1,7 @@
 // cxx-qtが直接扱えないQt APIの薄いラッパー
 #pragma once
 
+#include <QClipboard>
 #include <QGlyphRun>
 #include <QGuiApplication>
 #include <QInputMethod>
@@ -33,6 +34,9 @@ void focus_item(Item& item) {
 inline void update_input_method() {
     QGuiApplication::inputMethod()->update(Qt::ImQueryInput);
 }
+
+inline QString clipboard_text() { return QGuiApplication::clipboard()->text(); }
+inline void set_clipboard_text(const QString& text) { QGuiApplication::clipboard()->setText(text); }
 
 inline std::unique_ptr<QRawFont> new_raw_font(const QString& path, double pixel_size) {
     return std::make_unique<QRawFont>(path, pixel_size, QFont::PreferNoHinting);

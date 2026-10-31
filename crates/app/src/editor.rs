@@ -290,10 +290,50 @@ impl Editor {
         self.edited(cursor);
     }
 
+    pub fn selected_text(&self) -> Option<String> {
+        self.selection().map(|range| self.buffer.rope().slice(range).to_string())
+    }
+
+    pub fn select_all(&mut self) {
+        self.preferred_y = None;
+        self.anchor = Some(0);
+        self.set_cursor(self.buffer.rope().len_chars(), true);
+    }
+
+    pub fn is_modified(&self) -> bool {
+        self.buffer.is_modified()
+    }
+
+    pub fn has_file(&self) -> bool {
+        self.path.is_some()
+    }
+
+    /// ファイル名。未保存の新規文書なら空文字列。
+    pub fn document_name(&self) -> String {
+        let name = self.path.as_deref().and_then(|path| path.file_name());
+        name.map_or(String::new(), |name| name.to_string_lossy().into_owned())
+    }
+
     /// 保存先が未指定なら `InvalidInput` エラーを返す。
     pub fn save(&mut self) -> io::Result<()> {
         let path = self.path.clone().ok_or(io::ErrorKind::InvalidInput)?;
         self.buffer.save(&path)
+    }
+
+    pub fn save_as(&mut self, path: PathBuf) -> io::Result<()> {
+        self.buffer.save(&path)?;
+        self.path = Some(path);
+        Ok(())
+    }
+
+    /// 読み込みに失敗したら、編集中の文書はそのまま残す。
+    pub fn open(&mut self, path: PathBuf) -> io::Result<()> {
+        self.buffer = Buffer::load(&path)?;
+        self.path = Some(path);
+        self.scroll = 0.0;
+        self.preedit = None;
+        self.edited(0);
+        Ok(())
     }
 }
 
@@ -391,6 +431,54 @@ mod tests {
             assert_eq!(e.cursor, 4);
             e.click(screen.x + 1.0, screen.y + 1.0, true);
             assert_eq!(e.selection(), None);
+        });
+    }
+
+    #[test]
+    fn select_all_returns_whole_text_and_typing_replaces_it() {
+        with_editor("あい\nう", |e| {
+            assert_eq!(e.selected_text(), None);
+            e.select_all();
+            assert_eq!(e.selected_text().as_deref(), Some("あい\nう"));
+            e.insert("か");
+            assert_eq!(text(e), "か");
+            assert_eq!(e.selected_text(), None);
+        });
+    }
+
+    #[test]
+    fn save_as_then_open_switches_document_and_failed_open_keeps_it() {
+        with_editor("", |e| {
+            let dir = std::env::temp_dir().join(format!("kakikotoba-app-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let (first, second, broken) = (dir.join("一.txt"), dir.join("二.txt"), dir.join("壊.txt"));
+            std::fs::write(&second, "別の文書").unwrap();
+            std::fs::write(&broken, [0xff, 0xfe]).unwrap();
+
+            assert!(!e.has_file());
+            assert_eq!(e.document_name(), "");
+            assert_eq!(e.save().unwrap_err().kind(), io::ErrorKind::InvalidInput);
+
+            e.insert("あ");
+            assert!(e.is_modified());
+            e.save_as(first.clone()).unwrap();
+            assert!(!e.is_modified());
+            assert_eq!(e.document_name(), "一.txt");
+
+            e.insert("い");
+            assert!(e.open(broken).is_err());
+            assert_eq!(text(e), "あい");
+            assert_eq!(e.document_name(), "一.txt");
+            assert!(e.is_modified());
+
+            e.open(second).unwrap();
+            assert_eq!(text(e), "別の文書");
+            assert_eq!(e.document_name(), "二.txt");
+            assert!(!e.is_modified());
+            assert_eq!(e.cursor, 0);
+            assert_eq!(e.buffer.undo(), None);
+
+            std::fs::remove_dir_all(&dir).unwrap();
         });
     }
 
