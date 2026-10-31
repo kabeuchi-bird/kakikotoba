@@ -1,0 +1,27 @@
+﻿# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+language: ja-JP
+
+reviews:
+  profile: assertive
+  path_filters:
+    - "!Cargo.lock"
+  path_instructions:
+    - path: "crates/{core,layout,markup}/**"
+      instructions: >-
+        GUIに依存させない純Rustクレート（coreはropeyのみ）。Qtやcxx-qtへの依存が入っていたら指摘する。
+        文字位置はchar単位で、ropeyの位置と一致させる。
+    - path: "crates/layout/**"
+      instructions: >-
+        座標は画面座標系（yは下向き）で、原点は先頭列の右上、列は左へ進む。
+        rustybuzzの縦組みではy方向の符号が画面座標と逆になる点を確認する。
+    - path: "crates/core/**"
+      instructions: >-
+        保存処理は失敗時に元ファイルを壊さないこと。Undo/Redoでテキストとカーソル位置が復元されること。
+    - path: "crates/app/**"
+      instructions: >-
+        Qt APIの受け渡しの安全性（ポインタ有効期間、UTF-16と文字単位の変換）を確認する。
+        読み込み失敗時に空の文書として開くなど、データを失う経路がないか確認する。
+    - path: "CLAUDE.md"
+      instructions: >-
+        プロジェクトの仕様書。実装の変更と食い違っていないか確認する。
+        PDF/EPUB等の出力機能はスコープ外。
