@@ -5,8 +5,11 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use kakikotoba_core::Buffer;
+use kakikotoba_layout::page::{PageFormat, PageSettings, SpreadMode};
 use kakikotoba_layout::{Font, Layout, Rect, Run, Settings};
 use kakikotoba_markup::highlight::{Dialect, Highlighter, Options};
+
+use crate::page_view::PageView;
 
 const MARGIN: f32 = 24.0;
 /// 擬A6（文庫）の既定字数。字サイズはウィンドウの高さから算出する
@@ -15,6 +18,14 @@ const COLUMN_PITCH_RATIO: f32 = 1.75;
 const MIN_FONT_SIZE: f32 = 4.0;
 const CARET_THICKNESS: f32 = 2.0;
 const PREEDIT_LINE_WIDTH: f32 = 1.0;
+
+pub struct Fonts {
+    pub serif: Font<'static>,
+    pub serif_path: String,
+    /// 太字（ゴシック）
+    pub sans: Font<'static>,
+    pub sans_path: String,
+}
 
 struct Preedit {
     text: String,
@@ -25,8 +36,7 @@ struct Preedit {
 pub struct Editor {
     buffer: Buffer,
     path: Option<PathBuf>,
-    font: Font<'static>,
-    pub font_path: String,
+    pub fonts: Fonts,
     layout: Layout,
     settings: Settings,
     highlighter: Highlighter,
@@ -40,6 +50,9 @@ pub struct Editor {
     preedit: Option<Preedit>,
     /// ←→で列を移るときに保つ天からの距離
     preferred_y: Option<f32>,
+    page_settings: PageSettings,
+    /// ページモード中だけある
+    page_view: Option<PageView>,
 }
 
 fn settings_for(height: f32) -> Settings {
@@ -52,15 +65,15 @@ fn settings_for(height: f32) -> Settings {
 }
 
 impl Editor {
-    pub fn new(buffer: Buffer, path: Option<PathBuf>, font: Font<'static>, font_path: String) -> Self {
+    pub fn new(buffer: Buffer, path: Option<PathBuf>, fonts: Fonts) -> Self {
         let settings = settings_for(0.0);
         let dialect = Dialect::from_path(path.as_deref());
-        let layout = Layout::new("", &font, settings, &[]);
+        let layout = Layout::new("", &fonts.serif, settings, &[]);
+        let (chars_per_line, lines_per_page) = PageFormat::A6.default_size();
         let mut editor = Self {
             buffer,
             path,
-            font,
-            font_path,
+            fonts,
             layout,
             settings,
             highlighter: Highlighter::new(Options { dialect, symbol_forms: true }),
@@ -72,6 +85,13 @@ impl Editor {
             anchor: None,
             preedit: None,
             preferred_y: None,
+            page_settings: PageSettings {
+                format: PageFormat::A6,
+                chars_per_line,
+                lines_per_page,
+                spread: SpreadMode::LeftStart,
+            },
+            page_view: None,
         };
         editor.relayout();
         editor
@@ -107,7 +127,7 @@ impl Editor {
             // 色0は既定の文字色
             runs.extend(self.highlighter.spans().map(|span| Run { range: span.range, color: span.kind as u8 + 1 }));
         }
-        self.layout = Layout::new(&text, &self.font, self.settings, &runs);
+        self.layout = Layout::new(&text, &self.fonts.serif, self.settings, &runs);
     }
 
     fn to_screen(&self, rect: Rect) -> Rect {
@@ -340,6 +360,7 @@ impl Editor {
         self.path = Some(path);
         self.update_highlighter(self.highlighter.options().symbol_forms);
         self.relayout();
+        self.rebuild_page_view();
         Ok(())
     }
 
@@ -347,6 +368,7 @@ impl Editor {
         self.highlight_enabled = enabled;
         self.update_highlighter(symbol_forms);
         self.relayout();
+        self.rebuild_page_view();
     }
 
     /// 方言や記号形式が変わったときだけ解析結果を捨てる。
@@ -357,9 +379,72 @@ impl Editor {
         }
     }
 
+    pub fn page_view(&self) -> Option<&PageView> {
+        self.page_view.as_ref()
+    }
+
+    pub fn page_view_mut(&mut self) -> Option<&mut PageView> {
+        self.page_view.as_mut()
+    }
+
+    fn markup_options(&self) -> Options {
+        Options {
+            dialect: Dialect::from_path(self.path.as_deref()),
+            symbol_forms: self.highlighter.options().symbol_forms,
+        }
+    }
+
+    fn build_page_view(&self, source: usize) -> PageView {
+        let document = kakikotoba_markup::parse(&self.buffer.rope().to_string(), self.markup_options());
+        let directory = self.path.as_deref().and_then(|path| path.parent()).map(PathBuf::from);
+        PageView::new(&document, &self.fonts.serif, &self.fonts.sans, self.page_settings, source, directory)
+    }
+
+    /// ページモードと編集モードを切り替える。変換中は切り替えない。
+    pub fn toggle_page_mode(&mut self) {
+        if self.is_composing() {
+            return;
+        }
+        self.page_view = match self.page_view {
+            Some(_) => None,
+            None => Some(self.build_page_view(self.cursor)),
+        };
+    }
+
+    /// ページ上の位置に対応する編集位置へ移り、編集モードへ戻る。文字がなければ何もしない。
+    pub fn jump_to_editing(&mut self, x: f32, y: f32) {
+        let Some(source) = self.page_view.as_ref().and_then(|view| view.hit_test(x, y, self.width, self.height)) else {
+            return;
+        };
+        self.page_view = None;
+        self.preferred_y = None;
+        self.set_cursor(source.min(self.buffer.rope().len_chars()), false);
+    }
+
+    pub fn set_page_settings(&mut self, settings: PageSettings) {
+        self.page_settings = settings;
+        self.rebuild_page_view();
+    }
+
+    /// 組版に関わる設定が変わったら、同じ箇所を開いたまま組み直す。
+    fn rebuild_page_view(&mut self) {
+        if let Some(view) = &self.page_view {
+            let source = view.current_source().unwrap_or(self.cursor);
+            self.page_view = Some(self.build_page_view(source));
+        }
+    }
+
+    /// 文書情報を `項目: 値` の行にして返す。
+    pub fn metadata_text(&self) -> String {
+        let document = kakikotoba_markup::parse(&self.buffer.rope().to_string(), self.markup_options());
+        let lines: Vec<String> = document.metadata.iter().map(|m| format!("{}: {}", m.label, m.value)).collect();
+        lines.join("\n")
+    }
+
     /// 読み込みに失敗したら、編集中の文書はそのまま残す。
     pub fn open(&mut self, path: PathBuf) -> io::Result<()> {
         self.buffer = Buffer::load(&path)?;
+        self.page_view = None;
         self.path = Some(path);
         self.update_highlighter(self.highlighter.options().symbol_forms);
         self.scroll = 0.0;
@@ -380,8 +465,14 @@ mod tests {
             eprintln!("スキップ: {path} がない");
             return;
         };
-        let font = Font::new(Box::leak(data.into_boxed_slice()), 0).unwrap();
-        let mut editor = Editor::new(Buffer::new(text), None, font, path.to_owned());
+        let data: &'static [u8] = Box::leak(data.into_boxed_slice());
+        let fonts = Fonts {
+            serif: Font::new(data, 0).unwrap(),
+            serif_path: path.to_owned(),
+            sans: Font::new(data, 0).unwrap(),
+            sans_path: path.to_owned(),
+        };
+        let mut editor = Editor::new(Buffer::new(text), None, fonts);
         editor.resize(400.0, 39.0 * 10.0 + 2.0 * MARGIN);
         test(&mut editor);
     }
@@ -558,6 +649,106 @@ mod tests {
             std::fs::write(&txt, "*強調*").unwrap();
             e.open(txt).unwrap();
             assert_eq!(colors(e), [tag, 0, 0, 0]);
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    const SMALL_PAGE: PageSettings = PageSettings {
+        format: PageFormat::A6,
+        chars_per_line: 5,
+        lines_per_page: 2,
+        spread: SpreadMode::FullSpread,
+    };
+
+    #[test]
+    fn page_mode_opens_at_cursor_and_click_jumps_back() {
+        // 1ページ10字。全角12字目は2ページ目
+        with_editor("あいうえおかきくけこさしすせそ", |e| {
+            e.set_page_settings(SMALL_PAGE);
+            for _ in 0..12 {
+                e.move_down(false);
+            }
+            e.toggle_page_mode();
+            let view = e.page_view().unwrap();
+            assert_eq!(view.label(), "1-2 / 2");
+            let placed = view.placed_pages(e.width, e.height);
+            let em = view.em(e.width, e.height);
+            let stop = view.document.pages[1].stops[2].clone();
+            assert_eq!(stop.source, 12);
+            let (x, y) = (placed[1].x + (stop.rect.x + 0.5) * em, placed[1].y + (stop.rect.y + 0.5) * em);
+
+            // 余白の外（ページの外）では何も起きない
+            e.jump_to_editing(0.0, 0.0);
+            assert!(e.page_view().is_some());
+
+            e.jump_to_editing(x, y);
+            assert!(e.page_view().is_none());
+            assert_eq!(e.cursor, 12);
+        });
+    }
+
+    #[test]
+    fn spread_navigation_clamps_and_settings_keep_the_place() {
+        with_editor(&"あ".repeat(50), |e| {
+            e.set_page_settings(SMALL_PAGE);
+            e.toggle_page_mode();
+            let view = e.page_view_mut().unwrap();
+            view.previous_spread();
+            assert_eq!(view.label(), "1-2 / 5");
+            view.next_spread();
+            assert_eq!(view.label(), "3-4 / 5");
+            view.last_spread();
+            assert_eq!(view.label(), "5 / 5");
+            view.next_spread();
+            assert_eq!(view.label(), "5 / 5");
+            view.first_spread();
+            view.next_spread();
+
+            // 21字目が見えている見開きのまま、字数を倍にする
+            e.set_page_settings(PageSettings { chars_per_line: 10, ..SMALL_PAGE });
+            assert_eq!(e.page_view().unwrap().label(), "1-2 / 3");
+            e.toggle_page_mode();
+            assert_eq!(e.cursor, 0, "編集位置は動かない");
+        });
+    }
+
+    #[test]
+    fn composing_blocks_page_mode_and_open_leaves_it() {
+        with_editor("あ", |e| {
+            e.set_preedit("か", None);
+            e.toggle_page_mode();
+            assert!(e.page_view().is_none());
+            e.commit(0, 0, "か");
+            e.toggle_page_mode();
+            assert!(e.page_view().is_some());
+            let dir = std::env::temp_dir().join(format!("kakikotoba-page-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("a.txt");
+            std::fs::write(&path, "い").unwrap();
+            e.open(path).unwrap();
+            assert!(e.page_view().is_none());
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn metadata_text_lists_document_information() {
+        with_editor("#TITLE# 題\n本文\n#筆者# 誰か", |e| {
+            assert_eq!(e.metadata_text(), "タイトル: 題\n筆者: 誰か");
+        });
+    }
+
+    #[test]
+    fn image_paths_are_relative_to_the_document() {
+        with_editor("#IMG:N# a.jpg", |e| {
+            let dir = std::env::temp_dir().join(format!("kakikotoba-image-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            e.save_as(dir.join("本文.txt")).unwrap();
+            e.toggle_page_mode();
+            let view = e.page_view().unwrap();
+            assert_eq!(view.document.pages.iter().filter_map(|p| p.image.as_deref()).collect::<Vec<_>>(), ["a.jpg"]);
+            assert_eq!(view.image_path("a.jpg"), dir.join("a.jpg"));
+            assert_eq!(view.image_path("/x/a.jpg"), PathBuf::from("/x/a.jpg"));
             std::fs::remove_dir_all(&dir).unwrap();
         });
     }

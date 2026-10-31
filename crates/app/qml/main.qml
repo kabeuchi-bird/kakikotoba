@@ -2,6 +2,7 @@ import QtCore
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Dialogs
+import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import kakikotoba
 
@@ -12,12 +13,19 @@ Kirigami.ApplicationWindow {
     property var pendingAction: null
     property bool closeConfirmed: false
 
-    title: (editor.modified ? "*" : "") + (editor.documentName || "無題") + " — kakikotoba"
+    title: (editor.modified ? "*" : "") + (editor.documentName || "無題")
+        + (editor.pageMode ? " (" + editor.pageLabel + ")" : "") + " — kakikotoba"
     width: 1000
     height: 800
 
     function applyHighlightOptions() {
         editor.setHighlightOptions(settings.highlightEnabled, settings.symbolFormsEnabled);
+    }
+
+    function applyPageOptions() {
+        const a6 = settings.pageFormat === 0;
+        editor.setPageOptions(settings.pageFormat, a6 ? settings.a6Chars : settings.b6Chars,
+                              a6 ? settings.a6Lines : settings.b6Lines, settings.spreadMode);
     }
 
     function succeeded(error) {
@@ -66,7 +74,18 @@ Kirigami.ApplicationWindow {
         id: settings
         property bool highlightEnabled: true
         property bool symbolFormsEnabled: true
-        Component.onCompleted: root.applyHighlightOptions()
+        /// 0: 擬A6, 1: 擬B6
+        property int pageFormat: 0
+        property int a6Chars: 39
+        property int a6Lines: 17
+        property int b6Chars: 43
+        property int b6Lines: 18
+        /// 0: 左ページ始まり, 1: 最初から見開き
+        property int spreadMode: 0
+        Component.onCompleted: {
+            root.applyHighlightOptions();
+            root.applyPageOptions();
+        }
     }
 
     pageStack.initialPage: Kirigami.Page {
@@ -88,6 +107,7 @@ Kirigami.ApplicationWindow {
             commentColor: Kirigami.Theme.disabledTextColor
             strongColor: Kirigami.Theme.linkColor
             codeColor: Kirigami.Theme.visitedLinkColor
+            paperColor: Kirigami.Theme.alternateBackgroundColor
             // Backspaceがウィンドウ側のショートカットに取られると、編集領域へ届かない
             Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Backspace
 
@@ -100,6 +120,22 @@ Kirigami.ApplicationWindow {
                 id: optionsMenu
                 onClosed: editor.forceActiveFocus()
 
+                QQC2.MenuItem {
+                    text: editor.pageMode ? "編集モードへ (F5)" : "ページ表示 (F5)"
+                    onTriggered: editor.togglePageMode()
+                }
+                QQC2.MenuItem {
+                    text: "ページ設定…"
+                    onTriggered: pageSettingsDialog.open()
+                }
+                QQC2.MenuItem {
+                    text: "文書情報…"
+                    onTriggered: {
+                        metadataDialog.subtitle = editor.metadataText() || "文書情報はありません";
+                        metadataDialog.open();
+                    }
+                }
+                QQC2.MenuSeparator {}
                 QQC2.MenuItem {
                     text: "記法ハイライト"
                     checkable: true
@@ -134,6 +170,82 @@ Kirigami.ApplicationWindow {
     Shortcut {
         sequences: [StandardKey.SaveAs]
         onActivated: saveDialog.open()
+    }
+
+    Shortcut {
+        sequence: "F5"
+        onActivated: editor.togglePageMode()
+    }
+    Shortcut {
+        sequence: "Esc"
+        enabled: editor.pageMode
+        onActivated: editor.togglePageMode()
+    }
+
+    Kirigami.PromptDialog {
+        id: metadataDialog
+        title: "文書情報"
+        standardButtons: QQC2.Dialog.Close
+        onClosed: editor.forceActiveFocus()
+    }
+
+    Kirigami.Dialog {
+        id: pageSettingsDialog
+        title: "ページ設定"
+        standardButtons: QQC2.Dialog.Close
+        padding: Kirigami.Units.largeSpacing
+        onClosed: editor.forceActiveFocus()
+
+        GridLayout {
+            columns: 2
+
+            QQC2.Label { text: "版型" }
+            QQC2.ComboBox {
+                model: ["擬A6（文庫）", "擬B6"]
+                currentIndex: settings.pageFormat
+                onActivated: index => {
+                    settings.pageFormat = index;
+                    root.applyPageOptions();
+                }
+            }
+            QQC2.Label { text: "字数" }
+            QQC2.SpinBox {
+                from: 10
+                to: 80
+                value: settings.pageFormat === 0 ? settings.a6Chars : settings.b6Chars
+                onValueModified: {
+                    if (settings.pageFormat === 0) {
+                        settings.a6Chars = value;
+                    } else {
+                        settings.b6Chars = value;
+                    }
+                    root.applyPageOptions();
+                }
+            }
+            QQC2.Label { text: "行数" }
+            QQC2.SpinBox {
+                from: 5
+                to: 40
+                value: settings.pageFormat === 0 ? settings.a6Lines : settings.b6Lines
+                onValueModified: {
+                    if (settings.pageFormat === 0) {
+                        settings.a6Lines = value;
+                    } else {
+                        settings.b6Lines = value;
+                    }
+                    root.applyPageOptions();
+                }
+            }
+            QQC2.Label { text: "見開き" }
+            QQC2.ComboBox {
+                model: ["左ページ始まり", "最初から見開き"]
+                currentIndex: settings.spreadMode
+                onActivated: index => {
+                    settings.spreadMode = index;
+                    root.applyPageOptions();
+                }
+            }
+        }
     }
 
     Kirigami.PromptDialog {

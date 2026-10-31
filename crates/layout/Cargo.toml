@@ -5,4 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+kakikotoba-markup = { version = "0.1.0", path = "../markup" }
 rustybuzz = "0.20.1"

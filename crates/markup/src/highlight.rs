@@ -5,17 +5,7 @@ use std::path::Path;
 
 use pulldown_cmark::{Event, Options as CmarkOptions, Parser, Tag, TagEnd};
 
-/// `#〜#` タグの名前。文中の `#1` などと衝突させないため、リファレンスにあるものだけを認める。
-const TAGS: &[&str] = &[
-    "TITLE", "タイトル", "VOLUME", "巻数", "WRITER", "筆者", "WRITER:URL", "筆者:URL", "WRITER:MAIL", "筆者:MAIL",
-    "ILLUSTRATOR", "絵師", "ILLUSTRATOR:URL", "絵師:URL", "ILLUSTRATOR:MAIL", "絵師:MAIL", "CIRCLE", "サークル",
-    "THANKS", "協力", "EDITION", "改版履歴", "PRINTSHOP", "印刷所", "COVER", "表紙", "MIDDLECOVER", "中表紙",
-    "FRONTISPIECE", "口絵", "BACKCOVER", "裏表紙", "MIDDLEBACKGROUND", "中表紙背景", "ILLUSTRATORBACKGROUND",
-    "絵師背景", "INDEXBACKGROUND", "目次背景", "RIGHTPAGEBACKGROUND", "右ページ背景", "LEFTPAGEBACKGROUND",
-    "左ページ背景", "PUBLISHERBACKGROUND", "奥付背景", "START", "開始", "END", "終了", "TNF:START", "TNF:END",
-    "CHAPTER", "章", "NEWPAGE", "改頁", "改ページ", "NEWSTEP", "改段", "IMG:L", "挿絵:左", "IMG:R", "挿絵:右",
-    "IMG:N", "挿絵:次", "CENTER", "中央配置", "中央", "UNDER", "地付き", "中央配置:開始", "中央配置:終了",
-];
+use crate::pretnf::{Head, Node, Style, bar_ruby, line_head, parse_inline};
 
 /// 色分けの種類。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,13 +136,6 @@ impl Painter {
         self.kinds[range].fill(Some(kind));
     }
 
-    fn find(&self, target: &[char], range: Range<usize>) -> Option<usize> {
-        self.chars[range.clone()]
-            .windows(target.len())
-            .position(|window| window == target)
-            .map(|offset| range.start + offset)
-    }
-
     fn into_spans(self) -> Vec<Span> {
         let mut spans: Vec<Span> = Vec::new();
         for (i, kind) in self.kinds.into_iter().enumerate() {
@@ -168,68 +151,49 @@ impl Painter {
 
 fn paint_pretnf(p: &mut Painter, symbol_forms: bool) {
     let len = p.chars.len();
-    let body = match head_length(p, symbol_forms) {
-        Head::Whole(kind) => {
-            p.paint(0..len, kind);
+    let body = match line_head(&p.chars, symbol_forms) {
+        Head::None => 0,
+        Head::Comment => {
+            p.paint(0..len, Kind::Comment);
             return;
         }
-        Head::Length(length) => {
-            p.paint(0..length, Kind::Tag);
-            length
+        Head::NewPage | Head::Alone(_) => {
+            p.paint(0..len, Kind::Tag);
+            return;
+        }
+        Head::Tag { end, .. } | Head::PixivChapter { end } => {
+            p.paint(0..end, Kind::Tag);
+            end
+        }
+        Head::Prefix(_) => {
+            p.paint(0..1, Kind::Tag);
+            1
         }
     };
-    paint_inline(p, body..len, None, symbol_forms);
+    let nodes = parse_inline(&p.chars, body..len, symbol_forms);
+    paint_nodes(p, &nodes, None);
 }
 
-enum Head {
-    /// 行全体が1つの要素
-    Whole(Kind),
-    /// 行頭のタグや記号の長さ（なければ0）
-    Length(usize),
-}
-
-fn head_length(p: &Painter, symbol_forms: bool) -> Head {
-    let chars = &p.chars;
-    let text: String = chars.iter().collect();
-    if chars.first() == Some(&'#')
-        && let Some(end) = p.find(&['#'], 1..chars.len())
-        && TAGS.contains(&chars[1..end].iter().collect::<String>().as_str())
-    {
-        return Head::Length(end + 1);
-    }
-    if text == "[newpage]" {
-        return Head::Whole(Kind::Tag);
-    }
-    if text.starts_with("[chapter:")
-        && let Some(end) = p.find(&[']'], 9..chars.len())
-        && end > 9
-    {
-        return Head::Length(end + 1);
-    }
-    if !symbol_forms {
-        return Head::Length(0);
-    }
-    match chars.first() {
-        Some('!') => Head::Whole(Kind::Comment),
-        Some(':' | '{' | '}') if chars.len() == 1 => Head::Whole(Kind::Tag),
-        Some('-' | '$' | '+' | '*' | '%' | ';') if chars.len() > 1 => Head::Length(1),
-        _ => Head::Length(0),
-    }
-}
-
-/// 行内の記法を塗る。記法でない文字は `base` で塗る。
-fn paint_inline(p: &mut Painter, range: Range<usize>, base: Option<Kind>, symbol_forms: bool) {
-    let mut i = range.start;
-    while i < range.end {
-        let next = paint_pixiv_ruby(p, i, range.end, base)
-            .or_else(|| paint_bracket_ruby(p, i, range.end, base))
-            .or_else(|| paint_bar_ruby(p, i, range.end, base))
-            .or_else(|| paint_double_angle_emphasis(p, i, range.end, symbol_forms))
-            .or_else(|| paint_quoted(p, i, range.end, symbol_forms));
-        i = next.unwrap_or_else(|| {
-            paint_base(p, i..i + 1, base);
-            i + 1
-        });
+/// 記法でない文字は `base` で塗る。
+fn paint_nodes(p: &mut Painter, nodes: &[Node], base: Option<Kind>) {
+    for node in nodes {
+        match node {
+            // `[ベース文字]` 単独はページモードに任せ、ただの文字として扱う
+            Node::Text(range) | Node::RubyRef { whole: range, .. } => paint_base(p, range.clone(), base),
+            Node::Ruby { whole, base: ruby_base, ruby } => {
+                p.paint(whole.clone(), Kind::Delimiter);
+                p.kinds[ruby_base.clone()].fill(base);
+                p.paint(ruby.clone(), Kind::Ruby);
+            }
+            Node::Styled { whole, style, children } => {
+                p.paint(whole.clone(), Kind::Delimiter);
+                let kind = match style {
+                    Style::Emphasis => Kind::Emphasis,
+                    Style::Sideline => Kind::Sideline,
+                };
+                paint_nodes(p, children, Some(kind));
+            }
+        }
     }
 }
 
@@ -237,98 +201,6 @@ fn paint_base(p: &mut Painter, range: Range<usize>, base: Option<Kind>) {
     if let Some(kind) = base {
         p.paint(range, kind);
     }
-}
-
-/// `[[rb:ベース > ルビ]]`
-fn paint_pixiv_ruby(p: &mut Painter, i: usize, end: usize, base: Option<Kind>) -> Option<usize> {
-    const OPEN: [char; 5] = ['[', '[', 'r', 'b', ':'];
-    let body = i + OPEN.len();
-    if body > end || p.chars[i..body] != OPEN {
-        return None;
-    }
-    let close = p.find(&[']', ']'], body..end)?;
-    let separator = p.find(&['>'], body..close)?;
-    let is_space = |c: &char| c.is_whitespace();
-    let base_end = separator - p.chars[body..separator].iter().rev().take_while(|c| is_space(c)).count();
-    let ruby_start = separator + 1 + p.chars[separator + 1..close].iter().take_while(|c| is_space(c)).count();
-    if base_end == body || ruby_start == close {
-        return None;
-    }
-    p.paint(i..body, Kind::Delimiter);
-    paint_base(p, body..base_end, base);
-    p.paint(base_end..ruby_start, Kind::Delimiter);
-    p.paint(ruby_start..close, Kind::Ruby);
-    p.paint(close..close + 2, Kind::Delimiter);
-    Some(close + 2)
-}
-
-/// `[ベース|ルビ]`。`[ベース]` 単独はrubymapなのでページモードに任せる。
-fn paint_bracket_ruby(p: &mut Painter, i: usize, end: usize, base: Option<Kind>) -> Option<usize> {
-    if p.chars[i] != '[' {
-        return None;
-    }
-    let close = p.find(&[']'], i + 1..end)?;
-    let bar = p.find(&['|'], i + 1..close)?;
-    if bar == i + 1 || bar + 1 == close {
-        return None;
-    }
-    p.paint(i..i + 1, Kind::Delimiter);
-    paint_base(p, i + 1..bar, base);
-    p.paint(bar..bar + 1, Kind::Delimiter);
-    p.paint(bar + 1..close, Kind::Ruby);
-    p.paint(close..close + 1, Kind::Delimiter);
-    Some(close + 1)
-}
-
-/// `|ベース《ルビ》`、`｜ベース《ルビ》`
-fn paint_bar_ruby(p: &mut Painter, i: usize, end: usize, base: Option<Kind>) -> Option<usize> {
-    if !matches!(p.chars[i], '|' | '｜') {
-        return None;
-    }
-    let open = p.find(&['《'], i + 1..end)?;
-    let close = p.find(&['》'], open + 1..end)?;
-    if open == i + 1 || close == open + 1 {
-        return None;
-    }
-    p.paint(i..i + 1, Kind::Delimiter);
-    paint_base(p, i + 1..open, base);
-    p.paint(open..open + 1, Kind::Delimiter);
-    p.paint(open + 1..close, Kind::Ruby);
-    p.paint(close..close + 1, Kind::Delimiter);
-    Some(close + 1)
-}
-
-/// `《《傍点》》`
-fn paint_double_angle_emphasis(p: &mut Painter, i: usize, end: usize, symbol_forms: bool) -> Option<usize> {
-    if i + 2 > end || p.chars[i..i + 2] != ['《', '《'] {
-        return None;
-    }
-    let close = p.find(&['》', '》'], i + 2..end)?;
-    if close == i + 2 {
-        return None;
-    }
-    p.paint(i..i + 2, Kind::Delimiter);
-    paint_inline(p, i + 2..close, Some(Kind::Emphasis), symbol_forms);
-    p.paint(close..close + 2, Kind::Delimiter);
-    Some(close + 2)
-}
-
-/// 記号形式の `"傍点"`、`'傍線'`
-fn paint_quoted(p: &mut Painter, i: usize, end: usize, symbol_forms: bool) -> Option<usize> {
-    let quote = p.chars[i];
-    let kind = match quote {
-        '"' if symbol_forms => Kind::Emphasis,
-        '\'' if symbol_forms => Kind::Sideline,
-        _ => return None,
-    };
-    let close = p.find(&[quote], i + 1..end)?;
-    if close == i + 1 {
-        return None;
-    }
-    p.paint(i..i + 1, Kind::Delimiter);
-    paint_inline(p, i + 1..close, Some(kind), symbol_forms);
-    p.paint(close..close + 1, Kind::Delimiter);
-    Some(close + 1)
 }
 
 fn paint_markdown(p: &mut Painter, line: &str) {
@@ -363,14 +235,16 @@ fn paint_markdown(p: &mut Painter, line: &str) {
     // 拡張ルビ。コードの中はそのまま文字列として扱う
     let mut i = 0;
     while i < p.chars.len() {
-        i = match p.chars[i] {
-            '｜' if p.kinds[i] != Some(Kind::Code) => {
-                let end = p.chars.len();
-                let base = p.kinds[i];
-                paint_bar_ruby(p, i, end, base).unwrap_or(i + 1)
-            }
-            _ => i + 1,
-        };
+        if p.chars[i] == '｜'
+            && p.kinds[i] != Some(Kind::Code)
+            && let Some((node, next)) = bar_ruby(&p.chars, i, p.chars.len())
+        {
+            let base = p.kinds[i];
+            paint_nodes(p, &[node], base);
+            i = next;
+        } else {
+            i += 1;
+        }
     }
 }
 

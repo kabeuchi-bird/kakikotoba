@@ -10,10 +10,14 @@
 #include <QList>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
+#include <QPixmapCache>
 #include <QPointF>
 #include <QRawFont>
 #include <QWheelEvent>
 #include <QtQuick/QQuickPaintedItem>
+#include <cmath>
 #include <memory>
 
 #include "rust/cxx.h"
@@ -32,7 +36,7 @@ void focus_item(Item& item) {
 }
 
 inline void update_input_method() {
-    QGuiApplication::inputMethod()->update(Qt::ImQueryInput);
+    QGuiApplication::inputMethod()->update(Qt::ImQueryAll);
 }
 
 inline QString clipboard_text() { return QGuiApplication::clipboard()->text(); }
@@ -62,6 +66,45 @@ inline void draw_glyphs(QPainter& painter, const QRawFont& font, const QColor& c
 inline void fill_rect(QPainter& painter, float x, float y, float width, float height,
                       const QColor& color) {
     painter.fillRect(QRectF(x, y, width, height), color);
+}
+
+// 波線。rectの天地方向に波打つ
+inline void draw_wave(QPainter& painter, float x, float y, float width, float height,
+                      const QColor& color) {
+    const float amplitude = width / 2;
+    const float center = x + amplitude;
+    const float period = width * 2;
+    QPainterPath path(QPointF(center, y));
+    for (float offset = 0; offset <= height; offset += 1) {
+        path.lineTo(center + amplitude * std::sin(offset / period * 2 * M_PI), y + offset);
+    }
+    painter.setPen(color);
+    painter.setBrush(Qt::NoBrush);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.drawPath(path);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+}
+
+// 読めない画像は枠だけ描く
+inline void draw_image(QPainter& painter, const QString& path, float x, float y, float width,
+                       float height, const QColor& frame) {
+    const QRectF page(x, y, width, height);
+    QPixmap pixmap;
+    if (!QPixmapCache::find(path, &pixmap)) {
+        if (pixmap.load(path)) {
+            QPixmapCache::insert(path, pixmap);
+        }
+    }
+    if (pixmap.isNull()) {
+        painter.setPen(frame);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(page);
+        return;
+    }
+    const QSizeF size = pixmap.size().toSizeF().scaled(page.size(), Qt::KeepAspectRatio);
+    const QRectF target(x + (width - size.width()) / 2, y + (height - size.height()) / 2,
+                        size.width(), size.height());
+    painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()));
 }
 
 inline qint32 key_code(const QKeyEvent& event) { return event.key(); }

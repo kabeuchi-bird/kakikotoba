@@ -357,6 +357,7 @@ dependencies = [
 name = "kakikotoba-layout"
 version = "0.1.0"
 dependencies = [
+ "kakikotoba-markup",
  "rustybuzz",
 ]
 

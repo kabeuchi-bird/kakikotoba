@@ -4,6 +4,7 @@
 //! 文字位置はすべて文字（char）単位で、`ropey` の位置と一致する。
 
 mod kinsoku;
+pub mod page;
 
 use std::ops::Range;
 
@@ -55,6 +56,30 @@ impl<'a> Font<'a> {
             cluster.advance -= pos.y_advance as f32 * scale;
         }
         clusters
+    }
+
+    /// 横組みで1行を組む。グリフ番号と行頭からの相対位置、行の幅を返す。
+    fn shape_line(&self, text: &str, font_size: f32) -> (Vec<(u16, f32, f32)>, f32) {
+        let mut buffer = UnicodeBuffer::new();
+        buffer.push_str(text);
+        buffer.set_direction(Direction::LeftToRight);
+        buffer.set_script(script::HAN);
+        buffer.set_language(self.language.clone());
+        let shaped = rustybuzz::shape(&self.face, &[], buffer);
+
+        let scale = font_size / self.face.units_per_em() as f32;
+        let mut pen = 0.0;
+        let glyphs = shaped
+            .glyph_infos()
+            .iter()
+            .zip(shaped.glyph_positions())
+            .map(|(info, pos)| {
+                let glyph = (info.glyph_id as u16, pen + pos.x_offset as f32 * scale, -pos.y_offset as f32 * scale);
+                pen += pos.x_advance as f32 * scale;
+                glyph
+            })
+            .collect();
+        (glyphs, pen)
     }
 }
 
