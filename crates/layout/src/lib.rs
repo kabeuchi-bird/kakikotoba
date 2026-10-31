@@ -5,11 +5,19 @@
 
 mod kinsoku;
 pub mod page;
+mod segment;
 
 use std::ops::Range;
 
 use rustybuzz::ttf_parser::Tag;
 use rustybuzz::{Direction, Face, Feature, Language, UnicodeBuffer, script};
+
+use segment::Orientation;
+
+/// 縦中横の文字列を字面に収めるときのベースライン位置（字サイズ比）
+const TCY_BASELINE: f32 = 0.35;
+/// 90°回転した欧文のベースラインの、列の中心からの距離（字サイズ比）。仮想ボディの中心に揃える
+const ROTATED_BASELINE: f32 = 0.38;
 
 pub struct Font<'a> {
     face: Face<'a>,
@@ -45,6 +53,9 @@ impl<'a> Font<'a> {
                     byte_start,
                     advance: 0.0,
                     glyphs: Vec::new(),
+                    scale: 1.0,
+                    rotated: false,
+                    stops: 1,
                 });
             }
             let cluster = clusters.last_mut().expect("直前で追加済み");
@@ -54,6 +65,72 @@ impl<'a> Font<'a> {
                 cluster.advance - pos.y_offset as f32 * scale,
             ));
             cluster.advance -= pos.y_advance as f32 * scale;
+        }
+        clusters
+    }
+
+    /// 編集モード用。文字の向きを判定しながら組む。
+    fn shape_oriented(&self, text: &str, font_size: f32) -> Vec<ShapedCluster> {
+        let mut clusters = Vec::new();
+        for (orientation, range) in segment::segments(text) {
+            let part = &text[range.clone()];
+            let shaped = match orientation {
+                Orientation::Upright => self.shape(part, font_size),
+                Orientation::Tcy => vec![self.shape_tcy(part, font_size)],
+                Orientation::Rotated => self.shape_rotated(part, font_size),
+            };
+            clusters.extend(shaped.into_iter().map(|cluster| ShapedCluster {
+                byte_start: range.start + cluster.byte_start,
+                ..cluster
+            }));
+        }
+        clusters
+    }
+
+    /// 縦中横。全体を1字分に収める。
+    fn shape_tcy(&self, text: &str, font_size: f32) -> ShapedCluster {
+        let (glyphs, width) = self.shape_line(text, font_size);
+        let fit = (font_size / width).min(1.0);
+        let baseline = font_size * (0.5 + TCY_BASELINE * fit);
+        ShapedCluster {
+            byte_start: 0,
+            advance: font_size,
+            glyphs: glyphs.iter().map(|&(id, x, y)| (id, (x - width / 2.0) * fit, baseline + y * fit)).collect(),
+            scale: fit,
+            rotated: false,
+            stops: text.chars().count(),
+        }
+    }
+
+    /// 90°回転。横組みの右方向が画面の下方向になる。
+    fn shape_rotated(&self, text: &str, font_size: f32) -> Vec<ShapedCluster> {
+        let mut buffer = UnicodeBuffer::new();
+        buffer.push_str(text);
+        buffer.set_direction(Direction::LeftToRight);
+        let shaped = rustybuzz::shape(&self.face, &[], buffer);
+
+        let scale = font_size / self.face.units_per_em() as f32;
+        let baseline = -ROTATED_BASELINE * font_size;
+        let mut clusters: Vec<ShapedCluster> = Vec::new();
+        for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+            let byte_start = info.cluster as usize;
+            if clusters.last().is_none_or(|c| c.byte_start != byte_start) {
+                clusters.push(ShapedCluster {
+                    byte_start,
+                    advance: 0.0,
+                    glyphs: Vec::new(),
+                    scale: 1.0,
+                    rotated: true,
+                    stops: 1,
+                });
+            }
+            let cluster = clusters.last_mut().expect("直前で追加済み");
+            cluster.glyphs.push((
+                info.glyph_id as u16,
+                baseline + pos.y_offset as f32 * scale,
+                cluster.advance + pos.x_offset as f32 * scale,
+            ));
+            cluster.advance += pos.x_advance as f32 * scale;
         }
         clusters
     }
@@ -88,6 +165,12 @@ struct ShapedCluster {
     advance: f32,
     /// グリフ番号と、列の中心・クラスタ先頭からの相対位置
     glyphs: Vec<(u16, f32, f32)>,
+    /// 字サイズに対する倍率
+    scale: f32,
+    /// 90°回転して描くか
+    rotated: bool,
+    /// カーソルが止まる数。縦中横は桁ごとに止まる
+    stops: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,6 +198,10 @@ pub struct Glyph {
     pub char_index: usize,
     /// 色属性。どのランにも含まれなければ0
     pub color: u8,
+    /// 字サイズに対する倍率
+    pub scale: f32,
+    /// 時計回りに90°回転して描くか
+    pub rotated: bool,
 }
 
 /// 色属性のラン。範囲は文字単位で、重ならず、先頭から順に並べる。
@@ -171,7 +258,7 @@ impl Layout {
 
     fn push_paragraph(&mut self, text: &str, first_char: usize, font: &Font) {
         let Settings { font_size, chars_per_column, .. } = self.settings;
-        let shaped = font.shape(text, font_size);
+        let shaped = font.shape_oriented(text, font_size);
 
         let byte_end = |i: usize| shaped.get(i + 1).map_or(text.len(), |c| c.byte_start);
         let metrics: Vec<_> = shaped
@@ -183,7 +270,7 @@ impl Layout {
                 (first, source.chars().next_back().unwrap_or(first), c.advance)
             })
             .collect();
-        let ends = kinsoku::break_columns(&metrics, chars_per_column as f32 * font_size);
+        let ends = kinsoku::break_columns(&metrics, chars_per_column as f32 * font_size, true);
 
         let mut char_index = first_char;
         let mut y = 0.0;
@@ -194,9 +281,25 @@ impl Layout {
             let first_stop = self.stops.len();
             y = 0.0;
             for (i, cluster) in shaped.iter().enumerate().take(end).skip(start) {
-                self.stops.push(Stop { char_index, column, y, advance: cluster.advance });
+                let stop_advance = cluster.advance / cluster.stops as f32;
+                for stop in 0..cluster.stops {
+                    self.stops.push(Stop {
+                        char_index: char_index + stop,
+                        column,
+                        y: y + stop_advance * stop as f32,
+                        advance: stop_advance,
+                    });
+                }
                 for &(id, dx, dy) in &cluster.glyphs {
-                    self.glyphs.push(Glyph { id, x: center + dx, y: y + dy, char_index, color: 0 });
+                    self.glyphs.push(Glyph {
+                        id,
+                        x: center + dx,
+                        y: y + dy,
+                        char_index,
+                        color: 0,
+                        scale: cluster.scale,
+                        rotated: cluster.rotated,
+                    });
                 }
                 y += cluster.advance;
                 char_index += text[cluster.byte_start..byte_end(i)].chars().count();
@@ -340,8 +443,10 @@ mod tests {
             let text = "あいうえお。か\n\nき";
             let layout = Layout::new(text, font, SETTINGS, &[]);
             assert_eq!(layout.column_count(), 4);
-            assert_eq!(column_text(&layout, text, 0), "あいうえ");
-            assert_eq!(column_text(&layout, text, 1), "お。か");
+            assert!(layout.cursor_rect(5).y >= 50.0, "ぶら下げは列の外に出る");
+            // 「。」は行末にぶら下がる
+            assert_eq!(column_text(&layout, text, 0), "あいうえお。");
+            assert_eq!(column_text(&layout, text, 1), "か");
             assert_eq!(column_text(&layout, text, 2), "");
             assert_eq!(column_text(&layout, text, 3), "き");
         });
@@ -422,6 +527,44 @@ mod tests {
             let layout = Layout::new("あい\nうえお", font, SETTINGS, &runs);
             let colors: Vec<u8> = layout.glyphs.iter().map(|g| g.color).collect();
             assert_eq!(colors, [0, 3, 7, 7, 0]);
+        });
+    }
+
+    #[test]
+    fn two_or_three_digits_share_one_cell_with_a_stop_per_digit() {
+        with_font(|font| {
+            let layout = Layout::new("あ123い", font, SETTINGS, &[]);
+            // 桁ごとにカーソルが止まるが、全体で1字分
+            let seen = std::iter::successors(Some(0), |&i| Some(layout.next_char(i)).filter(|&n| n != i));
+            assert_eq!(seen.collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5]);
+            assert_eq!(layout.cursor_rect(1).y, 10.0);
+            assert_eq!(layout.cursor_rect(4).y, 20.0);
+            assert!(layout.cursor_rect(2).y > 10.0 && layout.cursor_rect(2).y < 20.0);
+
+            let digits: Vec<_> = layout.glyphs.iter().filter(|g| g.scale < 1.0).collect();
+            assert_eq!(digits.len(), 3);
+            assert!(digits.iter().all(|g| !g.rotated && g.y > 10.0 && g.y < 20.0));
+            // 横に並び、字面の幅に収まる
+            assert!(digits[0].x < digits[1].x && digits[1].x < digits[2].x);
+            assert!(digits[0].x >= -8.0 - 5.0 - 0.01 && digits[2].x < -8.0 + 5.0);
+        });
+    }
+
+    #[test]
+    fn latin_is_rotated_and_advances_down_the_column() {
+        with_font(|font| {
+            let layout = Layout::new("あAi い", font, Settings { chars_per_column: 20, ..SETTINGS }, &[]);
+            let rotated: Vec<_> = layout.glyphs.iter().filter(|g| g.rotated).collect();
+            assert_eq!(rotated.len(), 2);
+            // 同じベースライン上を下へ進む
+            assert_eq!(rotated[0].x, rotated[1].x);
+            assert!(rotated[0].y >= 10.0 && rotated[1].y > rotated[0].y);
+            // ベースラインは列の中心より左（文字の上側が右を向く）
+            assert!(rotated[0].x < -8.0);
+
+            // 英字は字幅に応じて進み、全角より狭い
+            let (a, i) = (layout.cursor_rect(1).y, layout.cursor_rect(2).y);
+            assert!(i > a && i - a < 10.0);
         });
     }
 

@@ -14,6 +14,8 @@ use crate::page_view::PageView;
 const MARGIN: f32 = 24.0;
 /// 擬A6（文庫）の既定字数。字サイズはウィンドウの高さから算出する
 const CHARS_PER_COLUMN: usize = 39;
+/// 行末のぶら下げが画面の外へ出ないよう、1字分を余分に確保する
+const HANGING_CHARS: usize = 1;
 const COLUMN_PITCH_RATIO: f32 = 1.75;
 const MIN_FONT_SIZE: f32 = 4.0;
 const CARET_THICKNESS: f32 = 2.0;
@@ -25,6 +27,17 @@ pub struct Fonts {
     /// 太字（ゴシック）
     pub sans: Font<'static>,
     pub sans_path: String,
+}
+
+/// 画面に描くグリフ。
+pub struct VisibleGlyph {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+    pub color: u8,
+    /// 字サイズ（px）
+    pub size: f32,
+    pub rotated: bool,
 }
 
 struct Preedit {
@@ -56,7 +69,7 @@ pub struct Editor {
 }
 
 fn settings_for(height: f32) -> Settings {
-    let font_size = ((height - 2.0 * MARGIN) / CHARS_PER_COLUMN as f32).max(MIN_FONT_SIZE);
+    let font_size = ((height - 2.0 * MARGIN) / (CHARS_PER_COLUMN + HANGING_CHARS) as f32).max(MIN_FONT_SIZE);
     Settings {
         font_size,
         chars_per_column: CHARS_PER_COLUMN,
@@ -95,10 +108,6 @@ impl Editor {
         };
         editor.relayout();
         editor
-    }
-
-    pub fn font_size(&self) -> f32 {
-        self.settings.font_size
     }
 
     pub fn resize(&mut self, width: f32, height: f32) {
@@ -175,13 +184,20 @@ impl Editor {
         self.anchor.unwrap_or(self.caret_index())
     }
 
-    /// 画面内のグリフを `(番号, x, y, 色属性)` で返す。
-    pub fn visible_glyphs(&self) -> impl Iterator<Item = (u32, f32, f32, u8)> + '_ {
+    /// 画面内のグリフを返す。
+    pub fn visible_glyphs(&self) -> impl Iterator<Item = VisibleGlyph> + '_ {
         let offset_x = self.width - MARGIN + self.scroll;
         let (left, right) = (-self.settings.column_pitch, self.width + self.settings.column_pitch);
         self.layout.glyphs.iter().filter_map(move |g| {
             let x = g.x + offset_x;
-            (left..right).contains(&x).then_some((g.id as u32, x, g.y + MARGIN, g.color))
+            (left..right).contains(&x).then_some(VisibleGlyph {
+                id: g.id as u32,
+                x,
+                y: g.y + MARGIN,
+                color: g.color,
+                size: self.settings.font_size * g.scale,
+                rotated: g.rotated,
+            })
         })
     }
 
@@ -473,7 +489,7 @@ mod tests {
             sans_path: path.to_owned(),
         };
         let mut editor = Editor::new(Buffer::new(text), None, fonts);
-        editor.resize(400.0, 39.0 * 10.0 + 2.0 * MARGIN);
+        editor.resize(400.0, (CHARS_PER_COLUMN + HANGING_CHARS) as f32 * 10.0 + 2.0 * MARGIN);
         test(&mut editor);
     }
 
@@ -607,7 +623,7 @@ mod tests {
     }
 
     fn colors(editor: &Editor) -> Vec<u8> {
-        editor.visible_glyphs().map(|(_, _, _, color)| color).collect()
+        editor.visible_glyphs().map(|glyph| glyph.color).collect()
     }
 
     #[test]

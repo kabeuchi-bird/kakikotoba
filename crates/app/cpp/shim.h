@@ -63,6 +63,26 @@ inline void draw_glyphs(QPainter& painter, const QRawFont& font, const QColor& c
     painter.drawGlyphRun(QPointF(0, 0), run);
 }
 
+// 時計回りに90°回転して描く。positions は回転前の画面座標
+inline void draw_glyphs_rotated(QPainter& painter, const QRawFont& font, const QColor& color,
+                                rust::Slice<const quint32> ids, rust::Slice<const float> positions) {
+    QList<quint32> indexes(ids.begin(), ids.end());
+    QList<QPointF> points;
+    points.reserve(indexes.size());
+    for (size_t i = 0; i + 1 < positions.size(); i += 2) {
+        points.append(QPointF(positions[i + 1], -positions[i]));
+    }
+    QGlyphRun run;
+    run.setRawFont(font);
+    run.setGlyphIndexes(indexes);
+    run.setPositions(points);
+    painter.save();
+    painter.setPen(color);
+    painter.rotate(90);
+    painter.drawGlyphRun(QPointF(0, 0), run);
+    painter.restore();
+}
+
 inline void fill_rect(QPainter& painter, float x, float y, float width, float height,
                       const QColor& color) {
     painter.fillRect(QRectF(x, y, width, height), color);

@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 
 use kakikotoba_markup::ast::{Block, BlockKind, Document, ImageAlign, Inline, InlineKind};
 
-use crate::{Font, Rect, kinsoku};
+use crate::{Font, Rect, TCY_BASELINE, kinsoku};
 
 /// A判・B判は縦横比が同じ
 const PAGE_ASPECT: f32 = std::f32::consts::SQRT_2;
@@ -20,8 +20,6 @@ const STRONG_SCALE: f32 = 1.25;
 const HORIZONTAL_SCALE: f32 = 0.8;
 const HORIZONTAL_LINE_HEIGHT: f32 = 1.2;
 const LINE_THICKNESS: f32 = 0.05;
-/// 縦中横の文字列を字面に収めるときのベースライン位置（字サイズ比）
-const TCY_BASELINE: f32 = 0.35;
 const WAVE_CHARS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -312,7 +310,7 @@ impl<'a, 'f> Flow<'a, 'f> {
             let metrics: Vec<_> = pieces.iter().map(|p| (p.first, p.last, p.advance)).collect();
             let mut pieces = pieces.into_iter();
             let mut start = 0;
-            for end in kinsoku::break_columns(&metrics, limit) {
+            for end in kinsoku::break_columns(&metrics, limit, false) {
                 let column: Vec<Piece> = pieces.by_ref().take(end - start).collect();
                 let length: f32 = column.iter().map(|p| p.advance).sum();
                 let y_offset = indent

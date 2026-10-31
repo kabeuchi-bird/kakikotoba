@@ -68,6 +68,13 @@ pub mod qobject {
             ids: &[u32],
             positions: &[f32],
         );
+        fn draw_glyphs_rotated(
+            painter: Pin<&mut QPainter>,
+            font: &QRawFont,
+            color: &QColor,
+            ids: &[u32],
+            positions: &[f32],
+        );
         fn fill_rect(painter: Pin<&mut QPainter>, x: f32, y: f32, width: f32, height: f32, color: &QColor);
         fn draw_wave(painter: Pin<&mut QPainter>, x: f32, y: f32, width: f32, height: f32, color: &QColor);
         fn draw_image(
@@ -287,7 +294,7 @@ fn paint_pages(rust: &mut VerticalEditorRust, mut painter: Pin<&mut qobject::QPa
             qobject::draw_wave(painter.as_mut(), x, y, w, h, &rust.text_color);
         }
         // 字サイズとフォントごとにまとめて描く
-        let mut batches: HashMap<(bool, u32), (Vec<u32>, Vec<f32>)> = HashMap::new();
+        let mut batches: GlyphBatches<(bool, u32)> = HashMap::new();
         for glyph in &page.glyphs {
             let (ids, positions) = batches.entry((glyph.sans, glyph.scale.to_bits())).or_default();
             ids.push(glyph.id as u32);
@@ -320,6 +327,8 @@ fn utf16_to_chars(text: &str, utf16: usize) -> usize {
 }
 
 const RAW_FONT_CACHE_LIMIT: usize = 64;
+/// キーごとのグリフ番号と位置（x, y の交互の並び）
+type GlyphBatches<K> = HashMap<K, (Vec<u32>, Vec<f32>)>;
 
 /// 字サイズごとのフォントを返す。ウィンドウの拡縮で増えるので、上限を超えたら捨てる。
 fn raw_font<'a>(
@@ -427,8 +436,6 @@ impl qobject::VerticalEditor {
             return;
         }
 
-        let font_size = rust.editor.font_size();
-
         let mut fill = |rect: Rect, color: &QColor| {
             qobject::fill_rect(painter.as_mut(), rect.x, rect.y, rect.width, rect.height, color);
         };
@@ -452,15 +459,19 @@ impl qobject::VerticalEditor {
             &rust.strong_color,
             &rust.code_color,
         ];
-        let mut batches: [(Vec<u32>, Vec<f32>); 9] = Default::default();
-        for (id, x, y, color) in rust.editor.visible_glyphs() {
-            let (ids, positions) = &mut batches[color as usize];
-            ids.push(id);
-            positions.extend([x, y]);
+        // 色、字サイズ、向きごとにまとめて描く
+        let mut batches: GlyphBatches<(u8, u32, bool)> = HashMap::new();
+        for glyph in rust.editor.visible_glyphs() {
+            let (ids, positions) = batches.entry((glyph.color, glyph.size.to_bits(), glyph.rotated)).or_default();
+            ids.push(glyph.id);
+            positions.extend([glyph.x, glyph.y]);
         }
-        let font = raw_font(&mut rust.raw_fonts, &rust.editor.fonts, false, font_size);
-        for (color, (ids, positions)) in palette.into_iter().zip(&batches) {
-            if !ids.is_empty() {
+        for ((color, size, rotated), (ids, positions)) in &batches {
+            let font = raw_font(&mut rust.raw_fonts, &rust.editor.fonts, false, f32::from_bits(*size));
+            let color = palette[*color as usize];
+            if *rotated {
+                qobject::draw_glyphs_rotated(painter.as_mut(), font, color, ids, positions);
+            } else {
                 qobject::draw_glyphs(painter.as_mut(), font, color, ids, positions);
             }
         }
