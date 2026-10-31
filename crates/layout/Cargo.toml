@@ -1,0 +1,8 @@
+[package]
+name = "kakikotoba-layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustybuzz = "0.20.1"
