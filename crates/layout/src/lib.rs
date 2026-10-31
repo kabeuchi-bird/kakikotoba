@@ -22,6 +22,8 @@ const ROTATED_BASELINE: f32 = 0.38;
 pub struct Font<'a> {
     face: Face<'a>,
     features: [Feature; 3],
+    /// 回転する欧文でも文字ごとにカーソルが止まるよう、合字を作らない
+    rotated_features: [Feature; 2],
     language: Language,
 }
 
@@ -31,6 +33,7 @@ impl<'a> Font<'a> {
         Some(Self {
             face: Face::from_slice(data, index)?,
             features: [b"vert", b"vrt2", b"vkna"].map(|tag| Feature::new(Tag::from_bytes(tag), 1, ..)),
+            rotated_features: [b"liga", b"clig"].map(|tag| Feature::new(Tag::from_bytes(tag), 0, ..)),
             language: "ja".parse().ok()?,
         })
     }
@@ -107,7 +110,7 @@ impl<'a> Font<'a> {
         let mut buffer = UnicodeBuffer::new();
         buffer.push_str(text);
         buffer.set_direction(Direction::LeftToRight);
-        let shaped = rustybuzz::shape(&self.face, &[], buffer);
+        let shaped = rustybuzz::shape(&self.face, &self.rotated_features, buffer);
 
         let scale = font_size / self.face.units_per_em() as f32;
         let baseline = -ROTATED_BASELINE * font_size;
@@ -438,6 +441,18 @@ mod tests {
             return;
         };
         test(&Font::new(&data, 0).expect("フォントを読めない"));
+    }
+
+    #[test]
+    fn rotated_latin_stops_at_every_character() {
+        with_font(|font| {
+            let text = "office fi fl The";
+            let settings = Settings { chars_per_column: 200, ..SETTINGS };
+            let layout = Layout::new(text, font, settings, &[]);
+            for index in 0..text.len() {
+                assert_eq!(layout.next_char(index), index + 1);
+            }
+        });
     }
 
     fn column_text(layout: &Layout, text: &str, column: usize) -> String {

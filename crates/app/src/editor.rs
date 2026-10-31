@@ -327,15 +327,17 @@ impl Editor {
         self.keep_caret_visible();
     }
 
-    /// カーソルから `start` 文字先の `length` 文字を `text` で置き換えて確定する。
+    /// カーソルから `start` 先の `length` 分を `text` で置き換えて確定する。
+    /// `start` と `length` はQtから来るのでUTF-16単位。
     pub fn commit(&mut self, start: isize, length: usize, text: &str) {
         self.preedit = None;
         let range = if (start, length) == (0, 0) {
             self.selection().unwrap_or(self.cursor..self.cursor)
         } else {
-            let end_of_text = self.buffer.rope().len_chars();
-            let from = self.cursor.saturating_add_signed(start).min(end_of_text);
-            from..(from + length).min(end_of_text)
+            let rope = self.buffer.rope();
+            let end_of_text = rope.len_utf16_cu();
+            let from = rope.char_to_utf16_cu(self.cursor).saturating_add_signed(start).min(end_of_text);
+            rope.utf16_cu_to_char(from)..rope.utf16_cu_to_char((from + length).min(end_of_text))
         };
         let cursor = self.buffer.replace(range, text);
         self.edited(cursor);
@@ -626,6 +628,17 @@ mod tests {
             assert_eq!(e.cursor, 4);
             e.click(screen.x + 1.0, screen.y + 1.0, true);
             assert_eq!(e.selection(), None);
+        });
+    }
+
+    #[test]
+    fn commit_replacement_range_is_in_utf16_units() {
+        with_editor("𠮷あい", |e| {
+            e.cursor = 3;
+            e.commit(-1, 1, "か");
+            assert_eq!(text(e), "𠮷あか");
+            e.commit(-4, 2, "き");
+            assert_eq!(text(e), "きあか");
         });
     }
 

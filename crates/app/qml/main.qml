@@ -47,8 +47,17 @@ Kirigami.ApplicationWindow {
     function save() {
         if (!editor.hasFile) {
             saveDialog.open();
-        } else if (succeeded(editor.save())) {
+        } else {
+            finishSaving(editor.save());
+        }
+    }
+
+    /// 失敗したら、保存の後に行うはずだった操作は取り消す
+    function finishSaving(error) {
+        if (succeeded(error)) {
             runPending();
+        } else {
+            pendingAction = null;
         }
     }
 
@@ -608,6 +617,8 @@ Kirigami.ApplicationWindow {
 
     Kirigami.PromptDialog {
         id: unsavedDialog
+        // 外側のクリックで閉じると、取り消しとして扱えない
+        closePolicy: QQC2.Popup.CloseOnEscape
         title: "保存されていない変更があります"
         subtitle: "変更を保存しますか？"
         standardButtons: QQC2.Dialog.NoButton
@@ -628,7 +639,7 @@ Kirigami.ApplicationWindow {
             },
             Kirigami.Action {
                 text: "キャンセル"
-                onTriggered: unsavedDialog.close()
+                onTriggered: unsavedDialog.reject()
             }
         ]
         onRejected: root.pendingAction = null
@@ -645,11 +656,7 @@ Kirigami.ApplicationWindow {
         id: saveDialog
         fileMode: FileDialog.SaveFile
         nameFilters: ["テキスト (*.txt *.md)", "すべてのファイル (*)"]
-        onAccepted: {
-            if (root.succeeded(editor.saveAs(selectedFile))) {
-                root.runPending();
-            }
-        }
+        onAccepted: root.finishSaving(editor.saveAs(selectedFile))
         onRejected: root.pendingAction = null
     }
 }

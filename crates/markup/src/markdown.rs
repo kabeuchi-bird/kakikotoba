@@ -63,7 +63,21 @@ pub(crate) fn parse(text: &str) -> Document {
             Some(frame) => f(&mut frame.children),
             None => f(inlines),
         };
+        // 項目のテキストは段落に包まれないことがあるので、次のブロックの前に確定する
+        let closes_item = matches!(
+            event,
+            Event::Rule
+                | Event::End(TagEnd::Item | TagEnd::List(_))
+                | Event::Start(Tag::List(_) | Tag::Paragraph | Tag::Heading { .. } | Tag::CodeBlock(_) | Tag::Table(_))
+        );
+        if let (true, Some(first), Some(last)) = (closes_item, inlines.first(), inlines.last()) {
+            let span = first.span.start..last.span.end;
+            let kind = BlockKind::ListItem { depth: list_depth };
+            document.blocks.push(Block { kind, inlines: std::mem::take(&mut inlines), span });
+        }
         match event {
+            // 表のセル内の強調は文字列だけを残す
+            Event::Start(Tag::Emphasis | Tag::Strong) | Event::End(TagEnd::Emphasis | TagEnd::Strong) if raw.is_some() => {}
             Event::Start(Tag::Emphasis) => frames.push(Frame { bold: false, start: span.start, children: Vec::new() }),
             Event::Start(Tag::Strong) => frames.push(Frame { bold: true, start: span.start, children: Vec::new() }),
             Event::End(TagEnd::Emphasis | TagEnd::Strong) => {
@@ -114,18 +128,8 @@ pub(crate) fn parse(text: &str) -> Document {
             Event::End(TagEnd::Heading(_)) => {
                 document.blocks.push(Block { kind: BlockKind::Chapter, inlines: std::mem::take(&mut inlines), span });
             }
-            // 項目のテキストは段落に包まれないことがある
-            Event::Start(Tag::List(_)) | Event::End(TagEnd::Item) | Event::End(TagEnd::List(_)) => {
-                if !inlines.is_empty() {
-                    let kind = BlockKind::ListItem { depth: list_depth };
-                    document.blocks.push(Block { kind, inlines: std::mem::take(&mut inlines), span: span.clone() });
-                }
-                match event {
-                    Event::Start(Tag::List(_)) => list_depth += 1,
-                    Event::End(TagEnd::List(_)) => list_depth -= 1,
-                    _ => {}
-                }
-            }
+            Event::Start(Tag::List(_)) => list_depth += 1,
+            Event::End(TagEnd::List(_)) => list_depth -= 1,
             Event::Rule => document.blocks.push(Block { kind: BlockKind::Rule, inlines: Vec::new(), span }),
             _ => {}
         }
@@ -139,6 +143,26 @@ mod tests {
 
     fn kinds(text: &str) -> Vec<BlockKind> {
         parse(text).blocks.into_iter().map(|b| b.kind).collect()
+    }
+
+    #[test]
+    fn emphasis_in_table_does_not_leak_into_next_block() {
+        let document = parse("| a |\n|---|\n| *x* |\n\n次の段落\n");
+        assert_eq!(document.blocks.len(), 2);
+        assert_eq!(document.blocks[0].kind, BlockKind::Horizontal { lines: vec!["a".to_owned(), "x".to_owned()] });
+        assert_eq!(document.blocks[1].inlines.len(), 1);
+        assert_eq!(kinds("| a |\n|---|\n| *x* |\n\n- 項目\n").len(), 2);
+    }
+
+    #[test]
+    fn tight_list_item_stays_before_the_block_inside_it() {
+        let item = BlockKind::ListItem { depth: 1 };
+        let code = BlockKind::Horizontal { lines: vec!["code".to_owned()] };
+        let document = parse("- a\n  ```\n  code\n  ```\n");
+        assert_eq!(document.blocks.iter().map(|b| b.kind.clone()).collect::<Vec<_>>(), [item.clone(), code]);
+        assert_eq!(document.blocks[0].span, 2..3);
+        assert_eq!(kinds("- a\n  ***\n"), [item.clone(), BlockKind::Rule]);
+        assert_eq!(kinds("- a\n  # 見出し\n"), [item, BlockKind::Chapter]);
     }
 
     #[test]
