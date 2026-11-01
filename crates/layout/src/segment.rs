@@ -27,7 +27,11 @@ fn classify(run: &str) -> Orientation {
             return Orientation::Upright;
         }
     }
-    if run.chars().any(char::is_alphanumeric) { Orientation::Rotated } else { Orientation::Upright }
+    if run.chars().any(|c| c.is_alphanumeric() || "[](){}<>".contains(c)) {
+        Orientation::Rotated
+    } else {
+        Orientation::Upright
+    }
 }
 
 /// 文字列を向きごとの区間に分ける。区間はバイト単位で、全体を隙間なく覆う。
@@ -98,6 +102,16 @@ mod tests {
         assert_eq!(parts("A12"), [(Rotated, "A12")]);
         assert_eq!(parts("12%"), [(Rotated, "12%")]);
         assert_eq!(parts("Ωμέγα"), [(Rotated, "Ωμέγα")]);
+    }
+
+    #[test]
+    fn brackets_rotate_but_fullwidth_ones_do_not() {
+        assert_eq!(
+            parts("ログ [カタカナ]"),
+            [(Upright, "ログ "), (Rotated, "["), (Upright, "カタカナ"), (Rotated, "]")]
+        );
+        assert_eq!(parts("(!)"), [(Rotated, "(!)")]);
+        assert_eq!(parts("［あ］"), [(Upright, "［あ］")]);
     }
 
     #[test]

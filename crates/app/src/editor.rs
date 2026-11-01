@@ -20,6 +20,11 @@ const COLUMN_PITCH_RATIO: f32 = 1.75;
 const MIN_FONT_SIZE: f32 = 4.0;
 const CARET_THICKNESS: f32 = 2.0;
 const PREEDIT_LINE_WIDTH: f32 = 1.0;
+/// fcitx-utils/textformatflags.h の HighLight。変換対象の文節に付く
+const PREEDIT_FORMAT_HIGHLIGHT: i32 = 1 << 4;
+const CANDIDATE_FONT_RATIO: f32 = 0.8;
+const MIN_CANDIDATE_FONT_SIZE: f32 = 12.0;
+const CANDIDATE_PANEL_PADDING: f32 = 4.0;
 
 pub struct Fonts {
     pub serif: Font<'static>,
@@ -44,6 +49,35 @@ struct Preedit {
     text: String,
     /// preedit先頭からのカーソル位置（文字単位）
     cursor: usize,
+    /// 変換対象の文節（preedit先頭からの文字単位）
+    focused: Option<Range<usize>>,
+}
+
+/// IMEから受け取った候補窓の内容。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CandidatePanel {
+    pub candidates: Vec<String>,
+    pub selected: Option<usize>,
+    /// 候補の数や入力メソッドの切り替えなどの補助表示
+    pub aux: String,
+}
+
+/// 候補窓の組版結果。座標は窓の右上が原点。
+struct CandidateView {
+    layout: Layout,
+    size: f32,
+    /// 候補ごとの文字範囲。補助表示は含まない
+    ranges: Vec<Range<usize>>,
+    selected: Option<usize>,
+    width: f32,
+    height: f32,
+}
+
+/// 候補窓の描画内容（画面座標）。
+pub struct CandidatePaint {
+    pub background: Rect,
+    pub selected: Vec<Rect>,
+    pub glyphs: Vec<VisibleGlyph>,
 }
 
 pub struct Editor {
@@ -61,6 +95,7 @@ pub struct Editor {
     cursor: usize,
     anchor: Option<usize>,
     preedit: Option<Preedit>,
+    candidate_view: Option<CandidateView>,
     /// ←→で列を移るときに保つ天からの距離
     preferred_y: Option<f32>,
     page_settings: PageSettings,
@@ -96,6 +131,7 @@ impl Editor {
             cursor: 0,
             anchor: None,
             preedit: None,
+            candidate_view: None,
             preferred_y: None,
             page_settings: PageSettings {
                 format: PageFormat::A6,
@@ -222,6 +258,120 @@ impl Editor {
             .collect()
     }
 
+    /// 変換対象の文節の矩形（画面座標）。
+    pub fn preedit_focus_rects(&self) -> Vec<Rect> {
+        let Some(focused) = self.preedit.as_ref().and_then(|p| p.focused.clone()) else {
+            return Vec::new();
+        };
+        let range = self.cursor + focused.start..self.cursor + focused.end;
+        self.layout.selection_rects(range).into_iter().map(|r| self.to_screen(r)).collect()
+    }
+
+    pub fn set_candidates(&mut self, panel: CandidatePanel) {
+        let mut lines = panel.candidates;
+        let candidate_count = lines.len();
+        if !panel.aux.is_empty() {
+            lines.push(panel.aux);
+        }
+        if lines.is_empty() {
+            self.candidate_view = None;
+            return;
+        }
+        let size = (self.settings.font_size * CANDIDATE_FONT_RATIO).max(MIN_CANDIDATE_FONT_SIZE);
+        let room = ((self.height - 2.0 * CANDIDATE_PANEL_PADDING) / size) as usize;
+        let longest = lines.iter().map(|line| line.chars().count()).max().unwrap_or(1);
+        let settings = Settings {
+            font_size: size,
+            chars_per_column: longest.min(room).max(1),
+            column_pitch: size * COLUMN_PITCH_RATIO,
+        };
+        let mut start = 0;
+        let ranges = lines[..candidate_count]
+            .iter()
+            .map(|line| {
+                let range = start..start + line.chars().count();
+                start = range.end + 1;
+                range
+            })
+            .collect();
+        let text = lines.join("\n");
+        let layout = Layout::new(&text, &self.fonts.serif, settings, &[]);
+        let height = layout
+            .selection_rects(0..text.chars().count())
+            .iter()
+            .map(|r| r.y + r.height)
+            .fold(0.0, f32::max);
+        self.candidate_view = Some(CandidateView {
+            width: layout.column_count() as f32 * settings.column_pitch + 2.0 * CANDIDATE_PANEL_PADDING,
+            height: height + 2.0 * CANDIDATE_PANEL_PADDING,
+            layout,
+            size,
+            ranges,
+            selected: panel.selected,
+        });
+    }
+
+    /// 候補窓の組版の原点（画面座標）。カーソル列の左に出し、入らなければ右に出す。
+    fn candidate_origin(&self, view: &CandidateView) -> (f32, f32) {
+        let cursor = self.cursor_rect();
+        let gap = PREEDIT_LINE_WIDTH + CANDIDATE_PANEL_PADDING;
+        let left_side = cursor.x - gap;
+        let right = if left_side >= view.width {
+            left_side
+        } else {
+            (cursor.x + cursor.width + gap + view.width).min(self.width).max(view.width)
+        };
+        let top = cursor.y.min(self.height - view.height).max(0.0);
+        (right - CANDIDATE_PANEL_PADDING, top + CANDIDATE_PANEL_PADDING)
+    }
+
+    pub fn candidate_paint(&self) -> Option<CandidatePaint> {
+        let view = self.candidate_view.as_ref()?;
+        let (x, y) = self.candidate_origin(view);
+        let to_screen = |r: Rect| Rect { x: x + r.x, y: y + r.y, ..r };
+        Some(CandidatePaint {
+            background: Rect {
+                x: x + CANDIDATE_PANEL_PADDING - view.width,
+                y: y - CANDIDATE_PANEL_PADDING,
+                width: view.width,
+                height: view.height,
+            },
+            selected: view
+                .selected
+                .and_then(|index| view.ranges.get(index))
+                .map_or(Vec::new(), |range| view.layout.selection_rects(range.clone()))
+                .into_iter()
+                .map(to_screen)
+                .collect(),
+            glyphs: view
+                .layout
+                .glyphs
+                .iter()
+                .map(|g| VisibleGlyph {
+                    id: g.id as u32,
+                    x: x + g.x,
+                    y: y + g.y,
+                    color: g.color,
+                    size: view.size * g.scale,
+                    rotated: g.rotated,
+                })
+                .collect(),
+        })
+    }
+
+    /// 候補窓の上の座標なら、そこにある候補を返す（補助表示の上なら `None` の候補）。
+    pub fn candidate_at(&self, x: f32, y: f32) -> Option<Option<usize>> {
+        let view = self.candidate_view.as_ref()?;
+        let (origin_x, origin_y) = self.candidate_origin(view);
+        let (x, y) = (x - origin_x, y - origin_y);
+        let inside = (-view.width + CANDIDATE_PANEL_PADDING..=CANDIDATE_PANEL_PADDING).contains(&x)
+            && (-CANDIDATE_PANEL_PADDING..=view.height - CANDIDATE_PANEL_PADDING).contains(&y);
+        inside.then(|| {
+            let index = view.layout.hit_test(x, y);
+            view.ranges.iter().position(|range| range.contains(&index) || range.end == index)
+        })
+    }
+
     fn set_cursor(&mut self, index: usize, extend: bool) {
         if extend {
             self.anchor.get_or_insert(self.cursor);
@@ -305,6 +455,30 @@ impl Editor {
 
     /// `cursor` はpreedit先頭からの文字数。`None` なら末尾。
     pub fn set_preedit(&mut self, text: &str, cursor: Option<usize>) {
+        self.set_preedit_with_focus(text, cursor, None);
+    }
+
+    /// fcitx5のプリエディットを受け取る。`cursor` はUTF-8のバイト単位で、負ならなし。
+    pub fn set_formatted_preedit(&mut self, segments: &[(String, i32)], cursor: i32) {
+        let text = segments.iter().map(|(segment, _)| segment.as_str()).collect::<String>();
+        let cursor = usize::try_from(cursor)
+            .ok()
+            .and_then(|bytes| text.get(..bytes))
+            .map(|before| before.chars().count());
+        let mut start = 0;
+        let mut focused = None;
+        for (segment, format) in segments {
+            let end = start + segment.chars().count();
+            if format & PREEDIT_FORMAT_HIGHLIGHT != 0 {
+                focused = Some(start..end);
+                break;
+            }
+            start = end;
+        }
+        self.set_preedit_with_focus(&text, cursor, focused);
+    }
+
+    fn set_preedit_with_focus(&mut self, text: &str, cursor: Option<usize>, focused: Option<Range<usize>>) {
         if text.is_empty() {
             self.preedit = None;
         } else {
@@ -316,6 +490,7 @@ impl Editor {
             self.preedit = Some(Preedit {
                 text: text.to_owned(),
                 cursor: cursor.unwrap_or(length).min(length),
+                focused,
             });
         }
         self.relayout();
@@ -568,6 +743,62 @@ mod tests {
             assert_eq!(e.cursor_rect().y, before + 10.0);
             e.undo();
             assert_eq!(text(e), "あい");
+        });
+    }
+
+    #[test]
+    fn formatted_preedit_converts_byte_cursor_and_finds_focused_segment() {
+        with_editor("", |e| {
+            let segments = [("今日は".to_owned(), 8), ("天気".to_owned(), 16)];
+            e.set_formatted_preedit(&segments, 9);
+            assert_eq!(e.caret_index(), 3);
+            let focus = e.preedit_focus_rects();
+            assert_eq!(focus.len(), 1);
+            assert_eq!(focus[0].height, 20.0);
+            assert_eq!(focus[0].y, e.cursor_rect().y);
+            // カーソルなしは末尾。文字の途中を指すバイト位置も末尾に寄せる
+            e.set_formatted_preedit(&[("かん".to_owned(), 8)], -1);
+            assert_eq!(e.caret_index(), 2);
+            assert!(e.preedit_focus_rects().is_empty());
+            e.set_formatted_preedit(&[("かん".to_owned(), 8)], 1);
+            assert_eq!(e.caret_index(), 2);
+            e.set_formatted_preedit(&[], 0);
+            assert!(!e.is_composing());
+        });
+    }
+
+    #[test]
+    fn candidates_lie_left_of_cursor_and_clicks_find_them() {
+        with_editor("", |e| {
+            let panel = || CandidatePanel {
+                candidates: vec!["1　感じ".to_owned(), "2　漢字".to_owned()],
+                selected: Some(1),
+                aux: "[2/41]".to_owned(),
+            };
+            e.set_candidates(panel());
+            let paint = e.candidate_paint().unwrap();
+            let cursor = e.cursor_rect();
+            assert!(paint.background.x + paint.background.width <= cursor.x);
+            assert!(paint.background.height <= e.height);
+            // 選択中の候補は2列目（右から）
+            assert_eq!(paint.selected.len(), 1);
+            let selected = paint.selected[0];
+            let (x, y) = (selected.x + 1.0, selected.y + 1.0);
+            assert_eq!(e.candidate_at(x, y), Some(Some(1)));
+            // 補助表示は左端の列で、候補ではない
+            let (left, top) = (paint.background.x + 2.0, paint.background.y + 8.0);
+            assert_eq!(e.candidate_at(left, top), Some(None));
+            assert_eq!(e.candidate_at(cursor.x + 1.0, cursor.y), None);
+
+            // 左に入らなければ右へ出し、ウィンドウからはみ出さない
+            e.resize(100.0, e.height);
+            e.set_candidates(panel());
+            let paint = e.candidate_paint().unwrap();
+            assert!(paint.background.x >= 0.0);
+            assert!(paint.background.x + paint.background.width <= e.width);
+
+            e.set_candidates(CandidatePanel::default());
+            assert!(e.candidate_paint().is_none());
         });
     }
 
