@@ -6,12 +6,13 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 use cxx::UniquePtr;
-use cxx_qt::CxxQtType;
+use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QColor, QRectF, QString, QUrl, QVariant};
 use kakikotoba_layout::Rect;
 use kakikotoba_layout::page::{PageFormat, PageSettings, SpreadMode};
 
-use crate::editor::{Editor, Fonts};
+use crate::editor::{Editor, Fonts, VisibleGlyph};
+use crate::fcitx::{self, NativeKey, QtKey};
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -90,6 +91,11 @@ pub mod qobject {
         fn key_modifiers(event: &QKeyEvent) -> i32;
         fn key_text(event: &QKeyEvent) -> QString;
         fn ignore_key(event: Pin<&mut QKeyEvent>);
+        fn key_native_sym(event: &QKeyEvent) -> u32;
+        fn key_native_code(event: &QKeyEvent) -> u32;
+        fn key_native_state(event: &QKeyEvent) -> u32;
+        fn key_time(event: &QKeyEvent) -> u32;
+        fn key_is_auto_repeat(event: &QKeyEvent) -> bool;
         fn mouse_x(event: &QMouseEvent) -> f32;
         fn mouse_y(event: &QMouseEvent) -> f32;
         fn mouse_left_pressed(event: &QMouseEvent) -> bool;
@@ -124,6 +130,7 @@ pub mod qobject {
         #[qproperty(bool, has_selection, cxx_name = "hasSelection")]
         #[qproperty(bool, modified)]
         #[qproperty(bool, has_file, cxx_name = "hasFile")]
+        #[qproperty(bool, composing)]
         #[qproperty(QString, document_name, cxx_name = "documentName")]
         type VerticalEditor = super::VerticalEditorRust;
 
@@ -182,11 +189,18 @@ pub mod qobject {
         #[cxx_name = "metadataText"]
         fn metadata_text(self: &VerticalEditor) -> QString;
 
+        #[qinvokable]
+        #[cxx_name = "setImeFocused"]
+        fn set_ime_focused(self: Pin<&mut VerticalEditor>, focused: bool);
+
         #[cxx_override]
         unsafe fn paint(self: Pin<&mut VerticalEditor>, painter: *mut QPainter);
         #[cxx_override]
         #[cxx_name = "keyPressEvent"]
         unsafe fn key_press_event(self: Pin<&mut VerticalEditor>, event: *mut QKeyEvent);
+        #[cxx_override]
+        #[cxx_name = "keyReleaseEvent"]
+        unsafe fn key_release_event(self: Pin<&mut VerticalEditor>, event: *mut QKeyEvent);
         #[cxx_override]
         #[cxx_name = "mousePressEvent"]
         unsafe fn mouse_press_event(self: Pin<&mut VerticalEditor>, event: *mut QMouseEvent);
@@ -205,6 +219,7 @@ pub mod qobject {
     }
 
     impl cxx_qt::Initialize for VerticalEditor {}
+    impl cxx_qt::Threading for VerticalEditor {}
 }
 
 const KEY_BACKSPACE: i32 = 0x0100_0003;
@@ -263,18 +278,56 @@ pub struct VerticalEditorRust {
     page_label: QString,
     modified: bool,
     has_file: bool,
+    composing: bool,
     document_name: QString,
     editor: StartupEditor,
     /// `(ゴシックか, 字サイズの1/64px)` ごとのフォント
     raw_fonts: HashMap<(bool, u32), UniquePtr<qobject::QRawFont>>,
     /// ページモードからのクリックで編集モードに戻った後、そのドラッグを選択にしない
     ignore_drag: bool,
+    /// fcitx5に接続中だけある。ないときはQtのIM経路を使う
+    ime: Option<fcitx::Client>,
+    /// QMLのアイテムがフォーカスを持っているか
+    has_focus: bool,
+    /// fcitx5へFocusInを送った状態か
+    ime_focused: bool,
 }
 
 impl cxx_qt::Initialize for qobject::VerticalEditor {
     fn initialize(mut self: Pin<&mut Self>) {
         qobject::init_item(self.as_mut());
-        self.sync_properties();
+        self.as_mut().sync_properties();
+        let thread = self.qt_thread();
+        fcitx::spawn(move |event| {
+            // アイテムが破棄された後は届けなくてよい
+            let _ = thread.queue(move |item| item.handle_ime_event(event));
+        });
+    }
+}
+
+/// 同じ字サイズと向きのグリフをまとめて描く。
+fn draw_visible_glyphs(
+    raw_fonts: &mut HashMap<(bool, u32), UniquePtr<qobject::QRawFont>>,
+    fonts: &Fonts,
+    mut painter: Pin<&mut qobject::QPainter>,
+    glyphs: impl Iterator<Item = VisibleGlyph>,
+    color_of: impl Fn(u8) -> QColor,
+) {
+    // 色、字サイズ、向きごとにまとめて描く
+    let mut batches: GlyphBatches<(u8, u32, bool)> = HashMap::new();
+    for glyph in glyphs {
+        let (ids, positions) = batches.entry((glyph.color, glyph.size.to_bits(), glyph.rotated)).or_default();
+        ids.push(glyph.id);
+        positions.extend([glyph.x, glyph.y]);
+    }
+    for ((color, size, rotated), (ids, positions)) in &batches {
+        let font = raw_font(raw_fonts, fonts, false, f32::from_bits(*size));
+        let color = color_of(*color);
+        if *rotated {
+            qobject::draw_glyphs_rotated(painter.as_mut(), font, &color, ids, positions);
+        } else {
+            qobject::draw_glyphs(painter.as_mut(), font, &color, ids, positions);
+        }
     }
 }
 
@@ -317,6 +370,20 @@ fn paint_pages(rust: &mut VerticalEditorRust, mut painter: Pin<&mut qobject::QPa
     let page_height = view.document.page_height * em;
     let top = (height - page_height) / 2.0;
     qobject::fill_rect(painter.as_mut(), width / 2.0, top, 1.0, page_height, &rust.delimiter_color);
+}
+
+/// Qtのキーイベントからfcitx5へ送るキーを作る。合成イベントにはネイティブの情報がない。
+fn native_key(event: &qobject::QKeyEvent, composing: bool) -> Option<NativeKey> {
+    let sym = qobject::key_native_sym(event);
+    (sym != 0).then(|| {
+        let native = NativeKey {
+            sym,
+            code: qobject::key_native_code(event),
+            state: qobject::key_native_state(event),
+            time: qobject::key_time(event),
+        };
+        if composing { fcitx::remap_composing_key(native) } else { native }
+    })
 }
 
 fn local_path(url: &QUrl) -> Result<PathBuf, String> {
@@ -367,6 +434,7 @@ impl qobject::VerticalEditor {
         let name = QString::from(editor.document_name().as_str());
         let (can_undo, can_redo, has_selection) = (editor.can_undo(), editor.can_redo(), editor.has_selection());
         let page_mode = editor.page_view().is_some();
+        let composing = editor.is_composing();
         let page_label = QString::from(editor.page_view().map_or(String::new(), |view| view.label()).as_str());
         self.as_mut().set_can_undo(can_undo);
         self.as_mut().set_can_redo(can_redo);
@@ -375,14 +443,60 @@ impl qobject::VerticalEditor {
         self.as_mut().set_page_label(page_label);
         self.as_mut().set_modified(modified);
         self.as_mut().set_has_file(has_file);
+        self.as_mut().set_composing(composing);
         self.as_mut().set_document_name(name);
     }
 
     /// 操作の結果を画面、QMLのプロパティ、IMEへ反映する。
     fn refresh(mut self: Pin<&mut Self>) {
         self.as_mut().sync_properties();
+        self.as_mut().sync_ime_focus();
         self.update();
         qobject::update_input_method();
+    }
+
+    /// ページモードは閲覧専用なので、fcitx5から見るとフォーカスを失った状態にする。
+    fn sync_ime_focus(self: Pin<&mut Self>) {
+        let rust = self.rust_mut().get_mut();
+        let wanted = rust.has_focus && rust.editor.0.page_view().is_none();
+        if let Some(ime) = rust.ime.as_ref().filter(|_| wanted != rust.ime_focused) {
+            if wanted {
+                ime.focus_in();
+            } else {
+                ime.focus_out();
+            }
+            rust.ime_focused = wanted;
+        }
+    }
+
+    fn set_ime_focused(mut self: Pin<&mut Self>, focused: bool) {
+        self.as_mut().rust_mut().get_mut().has_focus = focused;
+        self.refresh();
+    }
+
+    fn handle_ime_event(mut self: Pin<&mut Self>, event: fcitx::Event) {
+        match event {
+            fcitx::Event::Connected(client) => {
+                let rust = self.as_mut().rust_mut().get_mut();
+                rust.ime = Some(client);
+                rust.ime_focused = false;
+            }
+            fcitx::Event::Disconnected => {
+                let rust = self.as_mut().rust_mut().get_mut();
+                rust.ime = None;
+                rust.editor.0.set_preedit("", None);
+                rust.editor.0.set_candidates(Default::default());
+            }
+            fcitx::Event::Preedit(segments, cursor) => {
+                self.as_mut().editor_mut().set_formatted_preedit(&segments, cursor);
+            }
+            fcitx::Event::Panel(panel) => self.as_mut().editor_mut().set_candidates(panel),
+            fcitx::Event::Commit(text) => self.as_mut().editor_mut().commit(0, 0, &text),
+            fcitx::Event::Unhandled(key) => {
+                self.as_mut().handle_edit_key(&key);
+            }
+        }
+        self.refresh();
     }
 
     fn set_highlight_options(mut self: Pin<&mut Self>, enabled: bool, symbol_forms: bool) {
@@ -400,8 +514,16 @@ impl qobject::VerticalEditor {
     }
 
     fn new_document(mut self: Pin<&mut Self>) {
+        self.reset_ime();
         self.as_mut().editor_mut().new_document();
         self.refresh();
+    }
+
+    /// 文書を置き換える前に、未確定の文字を捨てる。
+    fn reset_ime(&self) {
+        if let Some(ime) = &self.rust().ime {
+            ime.reset();
+        }
     }
 
     fn undo(self: Pin<&mut Self>) {
@@ -492,6 +614,7 @@ impl qobject::VerticalEditor {
     }
 
     fn open(mut self: Pin<&mut Self>, url: &QUrl) -> QString {
+        self.reset_ime();
         let result = local_path(url)
             .and_then(|path| self.as_mut().editor_mut().open(path).map_err(|e| e.to_string()))
             .map_err(|e| format!("開けません: {e}"));
@@ -522,6 +645,10 @@ impl qobject::VerticalEditor {
         }
         fill(rust.editor.0.caret_rect(), &rust.text_color);
 
+        for rect in rust.editor.0.preedit_focus_rects() {
+            qobject::fill_rect(painter.as_mut(), rect.x, rect.y, rect.width, rect.height, &rust.selection_color);
+        }
+
         // 色属性の値は `Kind` の並びに1を足したもの。0は既定の文字色
         let palette = [
             &rust.text_color,
@@ -534,21 +661,27 @@ impl qobject::VerticalEditor {
             &rust.strong_color,
             &rust.code_color,
         ];
-        // 色、字サイズ、向きごとにまとめて描く
-        let mut batches: GlyphBatches<(u8, u32, bool)> = HashMap::new();
-        for glyph in rust.editor.0.visible_glyphs() {
-            let (ids, positions) = batches.entry((glyph.color, glyph.size.to_bits(), glyph.rotated)).or_default();
-            ids.push(glyph.id);
-            positions.extend([glyph.x, glyph.y]);
-        }
-        for ((color, size, rotated), (ids, positions)) in &batches {
-            let font = raw_font(&mut rust.raw_fonts, &rust.editor.0.fonts, false, f32::from_bits(*size));
-            let color = palette[*color as usize];
-            if *rotated {
-                qobject::draw_glyphs_rotated(painter.as_mut(), font, color, ids, positions);
-            } else {
-                qobject::draw_glyphs(painter.as_mut(), font, color, ids, positions);
+        draw_visible_glyphs(
+            &mut rust.raw_fonts,
+            &rust.editor.0.fonts,
+            painter.as_mut(),
+            rust.editor.0.visible_glyphs(),
+            |color| palette[color as usize].clone(),
+        );
+
+        if let Some(panel) = rust.editor.0.candidate_paint() {
+            let frame = panel.background;
+            qobject::fill_rect(painter.as_mut(), frame.x, frame.y, frame.width, frame.height, &rust.paper_color);
+            for rect in panel.selected {
+                qobject::fill_rect(painter.as_mut(), rect.x, rect.y, rect.width, rect.height, &rust.selection_color);
             }
+            draw_visible_glyphs(
+                &mut rust.raw_fonts,
+                &rust.editor.0.fonts,
+                painter.as_mut(),
+                panel.glyphs.into_iter(),
+                |_| rust.text_color.clone(),
+            );
         }
     }
 
@@ -558,7 +691,6 @@ impl qobject::VerticalEditor {
         let key = qobject::key_code(&event);
         let modifiers = qobject::key_modifiers(&event);
         let text = String::from(&qobject::key_text(&event));
-        let extend = modifiers & SHIFT != 0;
         let editor = self.as_mut().editor_mut();
 
         if let Some(view) = editor.page_view_mut() {
@@ -578,8 +710,40 @@ impl qobject::VerticalEditor {
             return;
         }
 
-        let handled = match key {
-            _ if editor.is_composing() => false,
+        let composing = editor.is_composing();
+        let key = QtKey { key, modifiers, text };
+        let native = native_key(&event, composing);
+        let key = match (&self.rust().ime, native) {
+            (Some(ime), Some(native)) => match ime.press(native, key) {
+                // 処理されなければ `Event::Unhandled` で戻ってくる
+                Ok(()) => return,
+                Err(key) => key,
+            },
+            _ => key,
+        };
+        if !self.handle_edit_key(&key) {
+            qobject::ignore_key(event.as_mut());
+        }
+    }
+
+    unsafe fn key_release_event(self: Pin<&mut Self>, event: *mut qobject::QKeyEvent) {
+        // SAFETY: Qtは配信中有効なイベントを渡す
+        let mut event = unsafe { Pin::new_unchecked(&mut *event) };
+        let editor = &self.rust().editor.0;
+        let native = native_key(&event, editor.is_composing()).filter(|_| editor.page_view().is_none());
+        match (&self.rust().ime, native) {
+            (Some(ime), Some(native)) if !qobject::key_is_auto_repeat(&event) => ime.release(native),
+            _ => qobject::ignore_key(event.as_mut()),
+        }
+    }
+
+    /// 編集モードのキー操作。処理したらtrue。
+    fn handle_edit_key(mut self: Pin<&mut Self>, key: &QtKey) -> bool {
+        let QtKey { key, modifiers, text } = key;
+        let extend = modifiers & SHIFT != 0;
+        let editor = self.as_mut().editor_mut();
+        let handled = match *key {
+            _ if editor.page_view().is_some() || editor.is_composing() => false,
             KEY_UP => { editor.move_up(extend); true }
             KEY_DOWN => { editor.move_down(extend); true }
             KEY_LEFT => { editor.move_columns(1, extend); true }
@@ -588,16 +752,15 @@ impl qobject::VerticalEditor {
             KEY_DELETE => { editor.delete(); true }
             KEY_RETURN | KEY_ENTER => { editor.insert("\n"); true }
             _ if modifiers & (CONTROL | ALT) == 0 && text.chars().all(|c| !c.is_control()) && !text.is_empty() => {
-                editor.insert(&text);
+                editor.insert(text);
                 true
             }
             _ => false,
         };
         if handled {
             self.refresh();
-        } else {
-            qobject::ignore_key(event.as_mut());
         }
+        handled
     }
 
     unsafe fn mouse_press_event(mut self: Pin<&mut Self>, event: *mut qobject::QMouseEvent) {
@@ -609,6 +772,20 @@ impl qobject::VerticalEditor {
         qobject::focus_item(self.as_mut());
         let (x, y) = (qobject::mouse_x(event), qobject::mouse_y(event));
         let rust = self.as_mut().rust_mut().get_mut();
+        if let Some(ime) = &rust.ime {
+            if let Some(candidate) = rust.editor.0.candidate_at(x, y) {
+                if let Some(index) = candidate {
+                    ime.select_candidate(index);
+                }
+                return;
+            }
+            if rust.editor.0.is_composing() {
+                // FocusOutでfcitx5が確定する
+                ime.focus_out();
+                ime.focus_in();
+                return;
+            }
+        }
         rust.ignore_drag = rust.editor.0.page_view().is_some();
         if rust.ignore_drag {
             rust.editor.0.jump_to_editing(x, y);
@@ -665,8 +842,8 @@ impl qobject::VerticalEditor {
     fn input_method_query(&self, query: qobject::InputMethodQuery) -> QVariant {
         let editor = &self.rust().editor.0;
         match query {
-            // ページモードは閲覧専用
-            qobject::InputMethodQuery::ImEnabled => QVariant::from(&editor.page_view().is_none()),
+            // ページモードは閲覧専用。fcitx5へ直接接続している間はQtの経路を止める
+            qobject::InputMethodQuery::ImEnabled => QVariant::from(&(editor.page_view().is_none() && self.rust().ime.is_none())),
             qobject::InputMethodQuery::ImCursorRectangle => {
                 let r = editor.cursor_rect();
                 QVariant::from(&QRectF::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64))

@@ -1,6 +1,7 @@
 //! cxx-qtによるQt統合、UI
 
 mod editor;
+mod fcitx;
 mod item;
 mod page_view;
 

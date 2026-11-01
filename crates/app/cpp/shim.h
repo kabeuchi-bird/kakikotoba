@@ -127,6 +127,11 @@ inline qint32 key_code(const QKeyEvent& event) { return event.key(); }
 inline qint32 key_modifiers(const QKeyEvent& event) { return event.modifiers().toInt(); }
 inline QString key_text(const QKeyEvent& event) { return event.text(); }
 inline void ignore_key(QKeyEvent& event) { event.ignore(); }
+inline quint32 key_native_sym(const QKeyEvent& event) { return event.nativeVirtualKey(); }
+inline quint32 key_native_code(const QKeyEvent& event) { return event.nativeScanCode(); }
+inline quint32 key_native_state(const QKeyEvent& event) { return event.nativeModifiers(); }
+inline quint32 key_time(const QKeyEvent& event) { return event.timestamp(); }
+inline bool key_is_auto_repeat(const QKeyEvent& event) { return event.isAutoRepeat(); }
 
 inline float mouse_x(const QMouseEvent& event) { return event.position().x(); }
 inline float mouse_y(const QMouseEvent& event) { return event.position().y(); }

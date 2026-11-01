@@ -11,6 +11,8 @@ cxx-qt-lib = { version = "0.10.0", features = ["qt_gui", "qt_qml"] }
 kakikotoba-core = { path = "../core" }
 kakikotoba-layout = { path = "../layout" }
 kakikotoba-markup = { path = "../markup" }
+serde = "1.0.229"
+zbus = "5"
 
 [build-dependencies]
 cxx-qt-build = "0.10.0"
