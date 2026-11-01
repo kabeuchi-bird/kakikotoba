@@ -772,17 +772,20 @@ impl qobject::VerticalEditor {
         qobject::focus_item(self.as_mut());
         let (x, y) = (qobject::mouse_x(event), qobject::mouse_y(event));
         let rust = self.as_mut().rust_mut().get_mut();
+        // ignore_drag は1か所にまとめられるが、各 return の意図が読めるよう分けて書く
         if let Some(ime) = &rust.ime {
             if let Some(candidate) = rust.editor.0.candidate_at(x, y) {
                 if let Some(index) = candidate {
                     ime.select_candidate(index);
                 }
+                rust.ignore_drag = true;
                 return;
             }
             if rust.editor.0.is_composing() {
                 // FocusOutでfcitx5が確定する
                 ime.focus_out();
                 ime.focus_in();
+                rust.ignore_drag = true;
                 return;
             }
         }

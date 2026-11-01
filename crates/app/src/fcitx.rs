@@ -199,8 +199,10 @@ impl Client {
         self.notify("FocusOut", &());
     }
 
-    /// 未確定の文字を破棄する。
+    /// 未確定の文字と、応答待ちのキーを破棄する。
+    // ponytail: Qtへキュー済みのイベントは残る。実害が出たら全イベントに世代を付ける
     pub fn reset(&self) {
+        self.pending_keys.lock().expect("保持中にpanicしない").clear();
         self.notify("Reset", &());
     }
 
