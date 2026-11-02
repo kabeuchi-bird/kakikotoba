@@ -453,7 +453,9 @@ Kirigami.ApplicationWindow {
             codeColor: Kirigami.Theme.visitedLinkColor
             paperColor: Kirigami.Theme.alternateBackgroundColor
             // Backspaceがウィンドウ側のショートカットに取られると、編集領域へ届かない
-            Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Backspace
+            // 変換中のキーはすべてIMEへ渡す
+            Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Backspace || composing
+            onActiveFocusChanged: setImeFocused(activeFocus)
             onPageModeChanged: findBar.hide()
 
             TapHandler {
