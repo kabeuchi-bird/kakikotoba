@@ -29,6 +29,18 @@ Kirigami.ApplicationWindow {
                               a6 ? settings.a6Lines : settings.b6Lines, settings.spreadMode);
     }
 
+    /// 編集用、ページ本文用、太字の順。VerticalEditor.setFontの番号に対応する
+    readonly property var fontSettingNames: ["editFont", "pageFont", "boldFont"]
+
+    /// 読めないフォントは既定に戻す
+    function applyFont(slot) {
+        const name = fontSettingNames[slot];
+        if (!succeeded(editor.setFont(slot, settings[name])) && settings[name]) {
+            settings[name] = "";
+            applyFont(slot);
+        }
+    }
+
     function succeeded(error) {
         if (error) {
             showPassiveNotification(error, "long");
@@ -84,7 +96,7 @@ Kirigami.ApplicationWindow {
     component RestoringMenu: QQC2.Menu {
         // メニューの項目が開いたダイアログから入力を奪わないように
         onClosed: {
-            if (![commandSearch, pageSettingsDialog, metadataDialog, unsavedDialog].some(dialog => dialog.visible)) {
+            if (![commandSearch, pageSettingsDialog, fontSettingsDialog, metadataDialog, unsavedDialog].some(dialog => dialog.visible)) {
                 editor.forceActiveFocus();
             }
         }
@@ -145,7 +157,7 @@ Kirigami.ApplicationWindow {
     readonly property var searchableCommands: [
         newCommand, openCommand, saveCommand, saveAsCommand, quitCommand,
         undoCommand, redoCommand, cutCommand, copyCommand, pasteCommand, selectAllCommand, findCommand,
-        pageModeCommand, pageSettingsCommand, metadataCommand, highlightCommand, symbolFormsCommand
+        pageModeCommand, pageSettingsCommand, fontSettingsCommand, metadataCommand, highlightCommand, symbolFormsCommand
     ]
 
     Command {
@@ -245,6 +257,11 @@ Kirigami.ApplicationWindow {
         onTriggered: pageSettingsDialog.open()
     }
     Command {
+        id: fontSettingsCommand
+        text: "フォント設定…"
+        onTriggered: fontSettingsDialog.open()
+    }
+    Command {
         id: metadataCommand
         text: "文書情報…"
         onTriggered: {
@@ -301,6 +318,7 @@ Kirigami.ApplicationWindow {
             title: "表示(&V)"
             GlobalItem { command: pageModeCommand }
             GlobalItem { command: pageSettingsCommand }
+            GlobalItem { command: fontSettingsCommand }
             GlobalItem { command: metadataCommand }
             GlobalItem { command: searchCommand }
             Platform.MenuSeparator {}
@@ -336,6 +354,7 @@ Kirigami.ApplicationWindow {
             title: "表示(&V)"
             CommandItem { command: pageModeCommand }
             CommandItem { command: pageSettingsCommand }
+            CommandItem { command: fontSettingsCommand }
             CommandItem { command: metadataCommand }
             CommandItem { command: searchCommand }
             QQC2.MenuSeparator {}
@@ -356,9 +375,14 @@ Kirigami.ApplicationWindow {
         property int b6Lines: 18
         /// 0: 左ページ始まり, 1: 最初から見開き
         property int spreadMode: 0
+        /// フォントのパス。空なら既定
+        property string editFont
+        property string pageFont
+        property string boldFont
         Component.onCompleted: {
             root.applyHighlightOptions();
             root.applyPageOptions();
+            root.fontSettingNames.forEach((_, slot) => root.applyFont(slot));
         }
     }
 
@@ -604,6 +628,60 @@ Kirigami.ApplicationWindow {
                     root.applyPageOptions();
                 }
             }
+        }
+    }
+
+    Kirigami.Dialog {
+        id: fontSettingsDialog
+
+        /// 開くたびに読み直すと選択が外れるので、最初の1回だけ読む
+        property var fonts: []
+
+        /// フォントの選択欄
+        component FontChooser: QQC2.ComboBox {
+            required property int slot
+            readonly property int settingIndex:
+                fontSettingsDialog.fonts.findIndex(font => font.value === settings[root.fontSettingNames[slot]])
+
+            Layout.fillWidth: true
+            // 指定しないと、長いフォント名が切れる幅になる
+            Layout.preferredWidth: Kirigami.Units.gridUnit * 24
+            // KDEのスタイルでは、開いた一覧の幅が選択欄と揃わない
+            popup.width: width
+            model: fontSettingsDialog.fonts
+            textRole: "text"
+            valueRole: "value"
+            currentIndex: settingIndex
+            onActivated: index => {
+                settings[root.fontSettingNames[slot]] = fontSettingsDialog.fonts[index].value;
+                root.applyFont(slot);
+                currentIndex = settingIndex;
+            }
+        }
+
+        title: "フォント設定"
+        standardButtons: QQC2.Dialog.Close
+        padding: Kirigami.Units.largeSpacing
+        onAboutToShow: {
+            if (fonts.length === 0) {
+                const installed = editor.fontList().split("\n").filter(line => line).map(line => {
+                    const [text, value] = line.split("\t");
+                    return { text, value };
+                });
+                fonts = [{ text: "既定", value: "" }, ...installed];
+            }
+        }
+        onClosed: editor.forceActiveFocus()
+
+        GridLayout {
+            columns: 2
+
+            QQC2.Label { text: "編集" }
+            FontChooser { slot: 0 }
+            QQC2.Label { text: "ページ本文" }
+            FontChooser { slot: 1 }
+            QQC2.Label { text: "太字" }
+            FontChooser { slot: 2 }
         }
     }
 

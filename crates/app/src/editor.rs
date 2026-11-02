@@ -6,9 +6,10 @@ use std::path::PathBuf;
 
 use kakikotoba_core::Buffer;
 use kakikotoba_layout::page::{PageFormat, PageSettings, SpreadMode};
-use kakikotoba_layout::{Font, Layout, Rect, Run, Settings};
+use kakikotoba_layout::{Layout, Rect, Run, Settings};
 use kakikotoba_markup::highlight::{Dialect, Highlighter, Options};
 
+use crate::fonts::{FontSlot, Fonts};
 use crate::page_view::PageView;
 
 const MARGIN: f32 = 24.0;
@@ -25,14 +26,6 @@ const PREEDIT_FORMAT_HIGHLIGHT: i32 = 1 << 4;
 const CANDIDATE_FONT_RATIO: f32 = 0.8;
 const MIN_CANDIDATE_FONT_SIZE: f32 = 12.0;
 const CANDIDATE_PANEL_PADDING: f32 = 4.0;
-
-pub struct Fonts {
-    pub serif: Font<'static>,
-    pub serif_path: String,
-    /// 太字（ゴシック）
-    pub sans: Font<'static>,
-    pub sans_path: String,
-}
 
 /// 画面に描くグリフ。
 pub struct VisibleGlyph {
@@ -116,7 +109,7 @@ impl Editor {
     pub fn new(buffer: Buffer, path: Option<PathBuf>, fonts: Fonts) -> Self {
         let settings = settings_for(0.0);
         let dialect = Dialect::from_path(path.as_deref());
-        let layout = Layout::new("", &fonts.serif, settings, &[]);
+        let layout = Layout::new("", &fonts.edit.font, settings, &[]);
         let mut editor = Self {
             buffer,
             path,
@@ -171,7 +164,7 @@ impl Editor {
             // 色0は既定の文字色
             runs.extend(self.highlighter.spans().map(|span| Run { range: span.range, color: span.kind as u8 + 1 }));
         }
-        self.layout = Layout::new(&text, &self.fonts.serif, self.settings, &runs);
+        self.layout = Layout::new(&text, &self.fonts.edit.font, self.settings, &runs);
     }
 
     fn to_screen(&self, rect: Rect) -> Rect {
@@ -295,7 +288,7 @@ impl Editor {
             })
             .collect();
         let text = lines.join("\n");
-        let layout = Layout::new(&text, &self.fonts.serif, settings, &[]);
+        let layout = Layout::new(&text, &self.fonts.edit.font, settings, &[]);
         let height = layout
             .selection_rects(0..text.chars().count())
             .iter()
@@ -614,7 +607,7 @@ impl Editor {
     fn build_page_view(&self, source: usize) -> PageView {
         let document = kakikotoba_markup::parse(&self.buffer.rope().to_string(), self.markup_options());
         let directory = self.path.as_deref().and_then(|path| path.parent()).map(PathBuf::from);
-        PageView::new(&document, &self.fonts.serif, &self.fonts.sans, self.page_settings, source, directory)
+        PageView::new(&document, &self.fonts.page.font, &self.fonts.bold.font, self.page_settings, source, directory)
     }
 
     /// ページモードと編集モードを切り替える。変換中は切り替えない。
@@ -641,6 +634,21 @@ impl Editor {
     pub fn set_page_settings(&mut self, settings: PageSettings) {
         self.page_settings = settings;
         self.rebuild_page_view();
+    }
+
+    /// フォントを替えて組み直す。`path` が空なら既定のフォント。変わったらtrue。
+    pub fn set_font(&mut self, slot: FontSlot, path: &str) -> Result<bool, String> {
+        let changed = self.fonts.set(slot, path)?;
+        if changed {
+            match slot {
+                FontSlot::Edit => {
+                    self.relayout();
+                    self.keep_caret_visible();
+                }
+                FontSlot::Page | FontSlot::Bold => self.rebuild_page_view(),
+            }
+        }
+        Ok(changed)
     }
 
     /// 組版に関わる設定が変わったら、同じ箇所を開いたまま組み直す。
@@ -704,16 +712,9 @@ mod tests {
 
     fn with_editor(text: &str, test: impl FnOnce(&mut Editor)) {
         let path = "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc";
-        let Ok(data) = std::fs::read(path) else {
+        let Ok(fonts) = Fonts::from_file(path) else {
             eprintln!("スキップ: {path} がない");
             return;
-        };
-        let data: &'static [u8] = Box::leak(data.into_boxed_slice());
-        let fonts = Fonts {
-            serif: Font::new(data, 0).unwrap(),
-            serif_path: path.to_owned(),
-            sans: Font::new(data, 0).unwrap(),
-            sans_path: path.to_owned(),
         };
         let mut editor = Editor::new(Buffer::new(text), None, fonts);
         editor.resize(400.0, (CHARS_PER_COLUMN + HANGING_CHARS) as f32 * 10.0 + 2.0 * MARGIN);
@@ -1128,6 +1129,37 @@ mod tests {
             assert!(e.can_redo());
             e.set_preedit("か", None);
             assert!(!e.can_undo() && !e.can_redo() && !e.is_editable());
+        });
+    }
+
+    #[test]
+    fn font_change_keeps_the_current_font_on_failure() {
+        with_editor("あ", |e| {
+            let path = e.fonts.edit.path.clone();
+            assert_eq!(e.set_font(FontSlot::Edit, &path), Ok(false));
+            assert!(e.set_font(FontSlot::Edit, "/存在しないフォント.ttf").is_err());
+            assert_eq!(e.fonts.edit.path, path);
+        });
+    }
+
+    #[test]
+    fn font_change_affects_only_its_slot_and_keeps_the_open_page() {
+        let other = "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc";
+        if !std::path::Path::new(other).exists() {
+            eprintln!("スキップ: {other} がない");
+            return;
+        }
+        with_editor("あ\n[newpage]\nい", |e| {
+            let page_font = e.fonts.page.path.clone();
+            assert_eq!(e.set_font(FontSlot::Edit, other), Ok(true));
+            assert_eq!(e.fonts.edit.path, other);
+            assert_eq!(e.fonts.page.path, page_font);
+
+            e.toggle_page_mode();
+            e.page_view_mut().unwrap().last_spread();
+            let spread = e.page_view().unwrap().current_source();
+            assert_eq!(e.set_font(FontSlot::Page, other), Ok(true));
+            assert_eq!(e.page_view().unwrap().current_source(), spread);
         });
     }
 
