@@ -159,7 +159,7 @@ impl Client {
         builder.build(body)
     }
 
-    /// 応答を待たずに送る。接続が切れていれば `NameOwnerChanged` で分かるので、失敗は無視する。
+    /// 応答を待たずに送る。接続が切れていれば受信スレッドで分かるので、失敗は無視する。
     fn notify<B>(&self, method: &str, body: &B)
     where
         B: serde::Serialize + DynamicType,
@@ -308,8 +308,9 @@ impl<F: FnMut(Event)> Receiver<F> {
     fn run(&mut self, messages: MessageIterator) {
         self.connect();
         for message in messages {
+            // 読み取りエラーの後は接続が閉じている
             let Ok(message) = message else {
-                continue;
+                break;
             };
             match message.message_type() {
                 Type::MethodReturn => self.handle_reply(&message, false),
@@ -320,6 +321,8 @@ impl<F: FnMut(Event)> Receiver<F> {
                 Type::MethodCall => {}
             }
         }
+        // バスごと切れると `NameOwnerChanged` は届かない
+        self.disconnect();
     }
 }
 
@@ -348,6 +351,8 @@ pub fn spawn(on_event: impl FnMut(Event) + Send + 'static) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -390,6 +395,32 @@ mod tests {
         assert_eq!(panel.selected, Some(1));
         assert_eq!(panel.aux, "[2/41]");
         assert_eq!(panel_from_ui(vec![], vec![], vec![], -1).selected, None);
+    }
+
+    #[test]
+    fn losing_the_bus_disconnects_and_returns_pending_keys() {
+        let mut bus = Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("dbus-daemonが要る");
+        let mut address = String::new();
+        BufReader::new(bus.stdout.take().unwrap()).read_line(&mut address).unwrap();
+        let connection = zbus::blocking::connection::Builder::address(address.trim()).unwrap().build().unwrap();
+        let messages = MessageIterator::from(&connection);
+
+        let key = QtKey { key: 0x41, modifiers: 0, text: "a".to_owned() };
+        let pending_keys = Arc::new(Mutex::new(HashMap::from([(1, key)])));
+        let (sender, events) = mpsc::channel();
+        thread::spawn(move || {
+            let on_event = move |event| sender.send(event).unwrap();
+            Receiver { connection, pending_keys, path: None, on_event }.run(messages);
+        });
+        bus.kill().unwrap();
+        bus.wait().unwrap();
+        let wait = Duration::from_secs(2);
+        assert!(matches!(events.recv_timeout(wait).unwrap(), Event::Disconnected));
+        assert!(matches!(events.recv_timeout(wait).unwrap(), Event::Unhandled(key) if key.key == 0x41));
     }
 
     /// 動いているfcitx5との通信を確かめる。Mozcがオンの状態で
