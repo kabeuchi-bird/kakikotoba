@@ -57,6 +57,8 @@ pub mod qobject {
 
     #[namespace = "shim"]
     unsafe extern "C++" {
+        /// アプリを起動し、終了するまで返らない。戻り値は終了コード
+        fn run_application(url: &QString) -> i32;
         fn init_item(item: Pin<&mut VerticalEditor>);
         fn focus_item(item: Pin<&mut VerticalEditor>);
         fn update_input_method();
