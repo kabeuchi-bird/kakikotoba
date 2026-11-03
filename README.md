@@ -39,6 +39,14 @@ Arch Linux 系でのインストール例:
 sudo pacman -S --needed rust qt6-base qt6-declarative kirigami fontconfig noto-fonts-cjk
 ```
 
+## インストール（Arch Linux 系）
+
+```sh
+git clone https://github.com/kabeuchi-bird/kakikotoba.git
+cd kakikotoba/aur/kakikotoba-git
+makepkg -si
+```
+
 ## ビルドと起動
 
 ```sh

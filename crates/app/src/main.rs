@@ -47,6 +47,8 @@ fn main() -> ExitCode {
         app.as_mut().set_organization_name(&QString::from("kakikotoba"));
         app.as_mut().set_application_name(&QString::from("kakikotoba"));
     }
+    // Waylandでは、この名前の .desktop からウィンドウのアイコンを決める
+    QGuiApplication::set_desktop_file_name(&QString::from("kakikotoba"));
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
         engine.load(&QUrl::from("qrc:/qt/qml/kakikotoba/qml/main.qml"));
