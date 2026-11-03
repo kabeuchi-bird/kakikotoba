@@ -23,10 +23,10 @@ pub struct PageView {
 }
 
 impl PageView {
-    pub fn new(
+    pub fn new<'f>(
         document: &Document,
-        serif: &Font,
-        sans: &Font,
+        serif: &Font<'f>,
+        sans: &Font<'f>,
         settings: PageSettings,
         source: usize,
         directory: Option<PathBuf>,

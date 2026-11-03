@@ -29,6 +29,8 @@ const CANDIDATE_PANEL_PADDING: f32 = 4.0;
 
 /// 画面に描くグリフ。
 pub struct VisibleGlyph {
+    /// 0は編集用フォント、1以上は補うフォント
+    pub font: u16,
     pub id: u32,
     pub x: f32,
     pub y: f32,
@@ -215,6 +217,7 @@ impl Editor {
         self.layout.glyphs.iter().filter_map(move |g| {
             let x = g.x + offset_x;
             (left..right).contains(&x).then_some(VisibleGlyph {
+                font: g.font,
                 id: g.id as u32,
                 x,
                 y: g.y + MARGIN,
@@ -341,6 +344,7 @@ impl Editor {
                 .glyphs
                 .iter()
                 .map(|g| VisibleGlyph {
+                    font: g.font,
                     id: g.id as u32,
                     x: x + g.x,
                     y: y + g.y,

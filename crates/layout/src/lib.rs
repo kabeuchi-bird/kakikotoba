@@ -19,12 +19,28 @@ const TCY_BASELINE: f32 = 0.35;
 /// 90°回転した欧文のベースラインの、列の中心からの距離（字サイズ比）。仮想ボディの中心に揃える
 const ROTATED_BASELINE: f32 = 0.38;
 
+/// フォントにない字を補う。字を渡すと、補うフォントの番号（1以上）とフォントを返す。
+pub type Fallback<'a> = Box<dyn Fn(char) -> Option<(u16, &'a Font<'a>)> + 'a>;
+
+/// 直前の字と同じフォントで組む字か。異体字セレクタ、結合文字、絵文字の修飾など。
+fn extends_previous(c: char) -> bool {
+    matches!(c,
+        '\u{0300}'..='\u{036f}'
+        | '\u{200d}'
+        | '\u{20e3}'
+        | '\u{3099}'..='\u{309a}'
+        | '\u{fe00}'..='\u{fe0f}'
+        | '\u{1f3fb}'..='\u{1f3ff}'
+        | '\u{e0100}'..='\u{e01ef}')
+}
+
 pub struct Font<'a> {
     face: Face<'a>,
     features: [Feature; 3],
     /// 回転する欧文でも文字ごとにカーソルが止まるよう、合字を作らない
     rotated_features: [Feature; 2],
     language: Language,
+    fallback: Option<Fallback<'a>>,
 }
 
 impl<'a> Font<'a> {
@@ -35,10 +51,69 @@ impl<'a> Font<'a> {
             features: [b"vert", b"vrt2", b"vkna"].map(|tag| Feature::new(Tag::from_bytes(tag), 1, ..)),
             rotated_features: [b"liga", b"clig"].map(|tag| Feature::new(Tag::from_bytes(tag), 0, ..)),
             language: "ja".parse().ok()?,
+            fallback: None,
         })
     }
 
+    pub fn with_fallback(self, fallback: Fallback<'a>) -> Self {
+        Self { fallback: Some(fallback), ..self }
+    }
+
+    /// 字を組むフォントと、その番号（このフォント自身なら0）。どのフォントにもなければ自身。
+    fn font_for(&self, c: char) -> (u16, &Font<'a>) {
+        if self.face.glyph_index(c).is_none()
+            && !c.is_control()
+            && let Some(found) = self.fallback.as_ref().and_then(|fallback| fallback(c))
+        {
+            return found;
+        }
+        (0, self)
+    }
+
+    /// 文字列を、同じフォントで組む連続に分ける。
+    fn runs(&self, text: &str) -> Vec<(Range<usize>, u16, &Font<'a>)> {
+        let mut runs: Vec<(Range<usize>, u16, &Font<'a>)> = Vec::new();
+        let mut joined = false;
+        for (start, c) in text.char_indices() {
+            let end = start + c.len_utf8();
+            let run = runs.last_mut().filter(|_| joined || extends_previous(c));
+            joined = c == '\u{200d}';
+            if let Some(run) = run {
+                run.0.end = end;
+                continue;
+            }
+            let (id, font) = self.font_for(c);
+            match runs.last_mut().filter(|run| run.1 == id) {
+                Some(run) => run.0.end = end,
+                None => runs.push((start..end, id, font)),
+            }
+        }
+        runs
+    }
+
+    /// 連続ごとに組み、クラスタの位置を文字列全体での位置に直す。
+    fn shape_runs(&self, text: &str, shape: impl Fn(&Font<'a>, &str, u16) -> Vec<ShapedCluster>) -> Vec<ShapedCluster> {
+        let mut clusters = Vec::new();
+        for (range, id, font) in self.runs(text) {
+            clusters.extend(shape(font, &text[range.clone()], id).into_iter().map(|cluster| ShapedCluster {
+                byte_start: range.start + cluster.byte_start,
+                ..cluster
+            }));
+        }
+        clusters
+    }
+
     fn shape(&self, text: &str, font_size: f32) -> Vec<ShapedCluster> {
+        self.shape_runs(text, |font, part, id| {
+            let mut clusters = font.shape_run(part, font_size, id);
+            if id != 0 {
+                clusters.iter_mut().for_each(|cluster| cluster.fit(font_size));
+            }
+            clusters
+        })
+    }
+
+    fn shape_run(&self, text: &str, font_size: f32, font_id: u16) -> Vec<ShapedCluster> {
         let mut buffer = UnicodeBuffer::new();
         buffer.push_str(text);
         buffer.set_direction(Direction::TopToBottom);
@@ -63,6 +138,7 @@ impl<'a> Font<'a> {
             }
             let cluster = clusters.last_mut().expect("直前で追加済み");
             cluster.glyphs.push((
+                font_id,
                 info.glyph_id as u16,
                 pos.x_offset as f32 * scale,
                 cluster.advance - pos.y_offset as f32 * scale,
@@ -98,7 +174,7 @@ impl<'a> Font<'a> {
         ShapedCluster {
             byte_start: 0,
             advance: font_size,
-            glyphs: glyphs.iter().map(|&(id, x, y)| (id, (x - width / 2.0) * fit, baseline + y * fit)).collect(),
+            glyphs: glyphs.iter().map(|&(font, id, x, y)| (font, id, (x - width / 2.0) * fit, baseline + y * fit)).collect(),
             scale: fit,
             rotated: false,
             stops: text.chars().count(),
@@ -107,6 +183,10 @@ impl<'a> Font<'a> {
 
     /// 90°回転。横組みの右方向が画面の下方向になる。
     fn shape_rotated(&self, text: &str, font_size: f32) -> Vec<ShapedCluster> {
+        self.shape_runs(text, |font, part, id| font.shape_rotated_run(part, font_size, id))
+    }
+
+    fn shape_rotated_run(&self, text: &str, font_size: f32, font_id: u16) -> Vec<ShapedCluster> {
         let mut buffer = UnicodeBuffer::new();
         buffer.push_str(text);
         buffer.set_direction(Direction::LeftToRight);
@@ -129,6 +209,7 @@ impl<'a> Font<'a> {
             }
             let cluster = clusters.last_mut().expect("直前で追加済み");
             cluster.glyphs.push((
+                font_id,
                 info.glyph_id as u16,
                 baseline + pos.y_offset as f32 * scale,
                 cluster.advance + pos.x_offset as f32 * scale,
@@ -138,27 +219,24 @@ impl<'a> Font<'a> {
         clusters
     }
 
-    /// 横組みで1行を組む。グリフ番号と行頭からの相対位置、行の幅を返す。
-    fn shape_line(&self, text: &str, font_size: f32) -> (Vec<(u16, f32, f32)>, f32) {
-        let mut buffer = UnicodeBuffer::new();
-        buffer.push_str(text);
-        buffer.set_direction(Direction::LeftToRight);
-        buffer.set_script(script::HAN);
-        buffer.set_language(self.language.clone());
-        let shaped = rustybuzz::shape(&self.face, &[], buffer);
-
-        let scale = font_size / self.face.units_per_em() as f32;
+    /// 横組みで1行を組む。グリフと行頭からの相対位置、行の幅を返す。
+    fn shape_line(&self, text: &str, font_size: f32) -> (Vec<ShapedGlyph>, f32) {
+        let mut glyphs = Vec::new();
         let mut pen = 0.0;
-        let glyphs = shaped
-            .glyph_infos()
-            .iter()
-            .zip(shaped.glyph_positions())
-            .map(|(info, pos)| {
-                let glyph = (info.glyph_id as u16, pen + pos.x_offset as f32 * scale, -pos.y_offset as f32 * scale);
+        for (range, id, font) in self.runs(text) {
+            let mut buffer = UnicodeBuffer::new();
+            buffer.push_str(&text[range]);
+            buffer.set_direction(Direction::LeftToRight);
+            buffer.set_script(script::HAN);
+            buffer.set_language(font.language.clone());
+            let shaped = rustybuzz::shape(&font.face, &[], buffer);
+
+            let scale = font_size / font.face.units_per_em() as f32;
+            for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+                glyphs.push((id, info.glyph_id as u16, pen + pos.x_offset as f32 * scale, -pos.y_offset as f32 * scale));
                 pen += pos.x_advance as f32 * scale;
-                glyph
-            })
-            .collect();
+            }
+        }
         (glyphs, pen)
     }
 }
@@ -169,17 +247,32 @@ fn edge_chars(text: &str) -> (char, char) {
     (first, text.chars().next_back().unwrap_or(first))
 }
 
+/// フォントの番号、グリフ番号、相対位置
+type ShapedGlyph = (u16, u16, f32, f32);
+
 struct ShapedCluster {
     byte_start: usize,
     advance: f32,
-    /// グリフ番号と、列の中心・クラスタ先頭からの相対位置
-    glyphs: Vec<(u16, f32, f32)>,
+    /// 列の中心・クラスタ先頭からの相対位置
+    glyphs: Vec<ShapedGlyph>,
     /// 字サイズに対する倍率
     scale: f32,
     /// 90°回転して描くか
     rotated: bool,
     /// カーソルが止まる数。縦中横は桁ごとに止まる
     stops: usize,
+}
+
+impl ShapedCluster {
+    /// 1字分に収める。補うフォントには、字送りが1字より長いもの（縦書き用の字送りがない、絵文字など）がある。
+    fn fit(&mut self, font_size: f32) {
+        if self.advance > font_size {
+            let fit = font_size / self.advance;
+            self.glyphs.iter_mut().for_each(|glyph| (glyph.2, glyph.3) = (glyph.2 * fit, glyph.3 * fit));
+            self.scale *= fit;
+            self.advance = font_size;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -201,6 +294,8 @@ pub struct Rect {
 /// 描画用のグリフ。`(x, y)` はベースライン原点で、`drawGlyphRun` の位置にそのまま渡せる。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Glyph {
+    /// 0は指定のフォント、1以上は `Fallback` が返した番号
+    pub font: u16,
     pub id: u16,
     pub x: f32,
     pub y: f32,
@@ -328,7 +423,8 @@ impl Layout {
     }
 
     fn push_cluster(&mut self, cluster: &ShapedCluster, center: f32, y: f32, char_index: usize) {
-        self.glyphs.extend(cluster.glyphs.iter().map(|&(id, dx, dy)| Glyph {
+        self.glyphs.extend(cluster.glyphs.iter().map(|&(font, id, dx, dy)| Glyph {
+            font,
             id,
             x: center + dx,
             y: y + dy,
@@ -445,6 +541,41 @@ mod tests {
                 assert_eq!(layout.next_char(index), index + 1);
             }
         });
+    }
+
+    #[test]
+    fn missing_characters_use_the_fallback_and_keep_their_positions() {
+        let read = |path: &str| std::fs::read(path).ok().map(|data| &*Box::leak(data.into_boxed_slice()));
+        let (Some(latin), Some(cjk)) =
+            (read("/usr/share/fonts/TTF/DejaVuSerif.ttf"), read("/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc"))
+        else {
+            eprintln!("スキップ: テスト用のフォントがない");
+            return;
+        };
+        let cjk: &'static Font<'static> = Box::leak(Box::new(Font::new(cjk, 0).unwrap()));
+        let primary = Font::new(latin, 0).unwrap().with_fallback(Box::new(move |c| {
+            (cjk.face.glyph_index(c).is_some() && c != '\u{1f600}').then_some((7, cjk))
+        }));
+        // 葛+異体字セレクタは1つのフォントで組む
+        let text = "Aあ葛\u{e0100}\u{1f600}";
+        let settings = Settings { chars_per_column: 20, ..SETTINGS };
+        let layout = Layout::new(text, &primary, settings, &[]);
+        let fonts: Vec<(usize, u16)> = layout.glyphs.iter().map(|g| (g.char_index, g.font)).collect();
+        assert_eq!(fonts, [(0, 0), (1, 7), (2, 7), (4, 0)]);
+        // カーソルが止まる位置は変わらない
+        assert_eq!(layout.next_char(1), 2);
+        assert_eq!(layout.next_char(4), 5);
+        // 補ったグリフの番号は、補う側のフォントのもの
+        let direct = Layout::new("あ", cjk, settings, &[]);
+        assert_eq!(layout.glyphs[1].id, direct.glyphs[0].id);
+        // DejaVuは縦書き用の字送りを持たないが、補うときは1字分に収める
+        let cjk_primary = Font::new(cjk.face.raw_face().data, 0).unwrap().with_fallback(Box::new(move |_| {
+            let latin: &'static Font<'static> = Box::leak(Box::new(Font::new(latin, 0).unwrap()));
+            Some((1, latin))
+        }));
+        let snowman = Layout::new("\u{10ffff}", &cjk_primary, settings, &[]);
+        assert_eq!(snowman.cursor_rect(1).y, settings.font_size);
+        assert!(snowman.glyphs[0].scale < 1.0);
     }
 
     fn column_text(layout: &Layout, text: &str, column: usize) -> String {

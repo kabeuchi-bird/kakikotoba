@@ -293,8 +293,8 @@ pub struct VerticalEditorRust {
     composing: bool,
     document_name: QString,
     editor: StartupEditor,
-    /// `(フォントの用途, 字サイズの1/64px)` ごとのフォント
-    raw_fonts: HashMap<(FontSlot, u32), UniquePtr<qobject::QRawFont>>,
+    /// `(フォントの用途, 補うフォントの番号, 字サイズの1/64px)` ごとのフォント
+    raw_fonts: RawFonts,
     /// ページモードからのクリックで編集モードに戻った後、そのドラッグを選択にしない
     ignore_drag: bool,
     /// fcitx5に接続中だけある。ないときはQtのIM経路を使う
@@ -319,21 +319,21 @@ impl cxx_qt::Initialize for qobject::VerticalEditor {
 
 /// 同じ字サイズと向きのグリフをまとめて描く。
 fn draw_visible_glyphs(
-    raw_fonts: &mut HashMap<(FontSlot, u32), UniquePtr<qobject::QRawFont>>,
+    raw_fonts: &mut RawFonts,
     fonts: &Fonts,
     mut painter: Pin<&mut qobject::QPainter>,
     glyphs: impl Iterator<Item = VisibleGlyph>,
     color_of: impl Fn(u8) -> QColor,
 ) {
-    // 色、字サイズ、向きごとにまとめて描く
-    let mut batches: GlyphBatches<(u8, u32, bool)> = HashMap::new();
+    // フォント、色、字サイズ、向きごとにまとめて描く
+    let mut batches: GlyphBatches<(u16, u8, u32, bool)> = HashMap::new();
     for glyph in glyphs {
-        let (ids, positions) = batches.entry((glyph.color, glyph.size.to_bits(), glyph.rotated)).or_default();
+        let (ids, positions) = batches.entry((glyph.font, glyph.color, glyph.size.to_bits(), glyph.rotated)).or_default();
         ids.push(glyph.id);
         positions.extend([glyph.x, glyph.y]);
     }
-    for ((color, size, rotated), (ids, positions)) in &batches {
-        let font = raw_font(raw_fonts, fonts, FontSlot::Edit, f32::from_bits(*size));
+    for ((font, color, size, rotated), (ids, positions)) in &batches {
+        let font = raw_font(raw_fonts, fonts, FontSlot::Edit, *font, f32::from_bits(*size));
         let color = color_of(*color);
         if *rotated {
             qobject::draw_glyphs_rotated(painter.as_mut(), font, &color, ids, positions);
@@ -367,15 +367,15 @@ fn paint_pages(rust: &mut VerticalEditorRust, mut painter: Pin<&mut qobject::QPa
             qobject::draw_wave(painter.as_mut(), x, y, w, h, &rust.text_color);
         }
         // 字サイズとフォントごとにまとめて描く
-        let mut batches: GlyphBatches<(bool, u32)> = HashMap::new();
+        let mut batches: GlyphBatches<(bool, u16, u32)> = HashMap::new();
         for glyph in &page.glyphs {
-            let (ids, positions) = batches.entry((glyph.sans, glyph.scale.to_bits())).or_default();
+            let (ids, positions) = batches.entry((glyph.sans, glyph.font, glyph.scale.to_bits())).or_default();
             ids.push(glyph.id as u32);
             positions.extend([placed.x + glyph.x * em, placed.y + glyph.y * em]);
         }
-        for ((sans, scale), (ids, positions)) in &batches {
+        for ((sans, font, scale), (ids, positions)) in &batches {
             let slot = if *sans { FontSlot::Bold } else { FontSlot::Page };
-            let font = raw_font(&mut rust.raw_fonts, &rust.editor.0.fonts, slot, f32::from_bits(*scale) * em);
+            let font = raw_font(&mut rust.raw_fonts, &rust.editor.0.fonts, slot, *font, f32::from_bits(*scale) * em);
             qobject::draw_glyphs(painter.as_mut(), font, &rust.text_color, ids, positions);
         }
     }
@@ -417,20 +417,22 @@ fn utf16_to_chars(text: &str, utf16: usize) -> usize {
 const RAW_FONT_CACHE_LIMIT: usize = 64;
 /// キーごとのグリフ番号と位置（x, y の交互の並び）
 type GlyphBatches<K> = HashMap<K, (Vec<u32>, Vec<f32>)>;
+type RawFonts = HashMap<(FontSlot, u16, u32), UniquePtr<qobject::QRawFont>>;
 
 /// 字サイズごとのフォントを返す。ウィンドウの拡縮で増えるので、上限を超えたら捨てる。
 fn raw_font<'a>(
-    cache: &'a mut HashMap<(FontSlot, u32), UniquePtr<qobject::QRawFont>>,
+    cache: &'a mut RawFonts,
     fonts: &Fonts,
     slot: FontSlot,
+    font: u16,
     size: f32,
 ) -> &'a qobject::QRawFont {
     if cache.len() >= RAW_FONT_CACHE_LIMIT {
         cache.clear();
     }
-    let key = (slot, (size * 64.0).round() as u32);
+    let key = (slot, font, (size * 64.0).round() as u32);
     let font = cache.entry(key).or_insert_with(|| {
-        qobject::new_raw_font(&QString::from(fonts.get(slot).path.as_str()), size as f64)
+        qobject::new_raw_font(&QString::from(fonts.path(slot, font).as_str()), size as f64)
     });
     font.as_ref().expect("生成済み")
 }

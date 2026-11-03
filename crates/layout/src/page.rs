@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 
 use kakikotoba_markup::ast::{Block, BlockKind, Document, ImageAlign, Inline, InlineKind};
 
-use crate::{Font, Rect, edge_chars, kinsoku};
+use crate::{Font, Rect, ShapedGlyph, edge_chars, kinsoku};
 
 /// A判・B判は縦横比が同じ
 const PAGE_ASPECT: f32 = std::f32::consts::SQRT_2;
@@ -68,6 +68,8 @@ pub struct PageSettings {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PageGlyph {
+    /// 0は `sans` で決まるフォント、1以上は `Fallback` が返した番号
+    pub font: u16,
     pub id: u16,
     pub x: f32,
     pub y: f32,
@@ -104,7 +106,7 @@ pub struct PagedDocument {
 }
 
 impl PagedDocument {
-    pub fn new(document: &Document, serif: &Font, sans: &Font, settings: PageSettings) -> Self {
+    pub fn new<'f>(document: &Document, serif: &Font<'f>, sans: &Font<'f>, settings: PageSettings) -> Self {
         let mut flow = Flow::new(serif, sans, settings);
         for block in &document.blocks {
             flow.block(block);
@@ -162,8 +164,8 @@ impl PagedDocument {
 }
 
 /// シェーピング結果を `(dx, dy)` ずらしてページのグリフにする。
-fn glyphs_at(glyphs: &[(u16, f32, f32)], dx: f32, dy: f32, scale: f32, sans: bool) -> impl Iterator<Item = PageGlyph> {
-    glyphs.iter().map(move |&(id, x, y)| PageGlyph { id, x: dx + x, y: dy + y, scale, sans })
+fn glyphs_at(glyphs: &[ShapedGlyph], dx: f32, dy: f32, scale: f32, sans: bool) -> impl Iterator<Item = PageGlyph> {
+    glyphs.iter().map(move |&(font, id, x, y)| PageGlyph { font, id, x: dx + x, y: dy + y, scale, sans })
 }
 
 /// 列中心・ペン位置からの相対位置で持つ、1単位の組版要素。
@@ -407,7 +409,7 @@ impl<'a, 'f> Flow<'a, 'f> {
             let content = &text[cluster.byte_start..byte_end];
             let (first, last) = edge_chars(content);
             let mut piece = Piece::new(first, last, cluster.advance, source + char_index);
-            piece.glyphs.extend(glyphs_at(&cluster.glyphs, 0.0, 0.0, style.scale, style.sans));
+            piece.glyphs.extend(glyphs_at(&cluster.glyphs, 0.0, 0.0, style.scale * cluster.scale, style.sans));
             self.decorate(&mut piece, style);
             char_index += content.chars().count();
             out.push(piece);
@@ -420,7 +422,7 @@ impl<'a, 'f> Flow<'a, 'f> {
             let size = style.scale * RUBY_SCALE;
             for cluster in self.serif.shape("﹅", size) {
                 let top = (piece.advance - cluster.advance) / 2.0;
-                piece.glyphs.extend(glyphs_at(&cluster.glyphs, style.scale * RUBY_CENTER, top, size, false));
+                piece.glyphs.extend(glyphs_at(&cluster.glyphs, style.scale * RUBY_CENTER, top, size * cluster.scale, false));
             }
         }
         if style.sideline {
@@ -437,7 +439,7 @@ impl<'a, 'f> Flow<'a, 'f> {
         let (first, last) = edge_chars(base);
         let mut piece = Piece::new(first, last, 0.0, source);
         for cluster in self.font(style).shape(base, style.scale) {
-            piece.glyphs.extend(glyphs_at(&cluster.glyphs, 0.0, piece.advance, style.scale, style.sans));
+            piece.glyphs.extend(glyphs_at(&cluster.glyphs, 0.0, piece.advance, style.scale * cluster.scale, style.sans));
             piece.advance += cluster.advance;
         }
         let size = style.scale * RUBY_SCALE;
@@ -445,7 +447,7 @@ impl<'a, 'f> Flow<'a, 'f> {
         let length: f32 = shaped.iter().map(|c| c.advance).sum();
         let mut pen = (piece.advance - length) / 2.0;
         for cluster in shaped {
-            piece.glyphs.extend(glyphs_at(&cluster.glyphs, style.scale * RUBY_CENTER, pen, size, false));
+            piece.glyphs.extend(glyphs_at(&cluster.glyphs, style.scale * RUBY_CENTER, pen, size * cluster.scale, false));
             pen += cluster.advance;
         }
         if style.sideline {
