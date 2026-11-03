@@ -172,8 +172,13 @@ crates/
 - 絵文字は表示できれば色を問わない。カラーフォントは補う候補から除く（`QRawFont` + `drawGlyphRun` では崩れて描かれるため）。単色のフォントになければ豆腐のままとし、READMEの既知の制限に書く
 - 補うフォントの字は、字送りが1字より長ければ1字分に縮める
 
+## 頒布
+
+- AURの `kakikotoba-git` で頒布する。パッケージのファイルは `aur/kakikotoba-git/` に置く
+- `PKGBUILD` を変更したら `makepkg --printsrcinfo > .SRCINFO` で `.SRCINFO` も更新する
+- アイコンは `assets/kakikotoba.svg`。単色で、KDE Plasmaの `ColorScheme-Text` でテーマの文字色に合わせる（ライトでは黒系、ダークでは白系。他の環境では黒）。hicolorテーマへ `kakikotoba` の名前で入れる。Waylandでウィンドウにアイコンを出すため、アプリの `desktopFileName` と `.desktop` のファイル名を `kakikotoba` で揃える
+
 ## 未決事項
 
-- 頒布方法: AURかAppImageかを決める
 - ファイル選択ダイアログ: 見づらく、わかりづらい。改善方法を検討する
 - 候補窓のホイールでのページ送り: 後日実装するかもしれない
