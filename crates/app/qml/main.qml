@@ -634,7 +634,7 @@ Kirigami.ApplicationWindow {
     Kirigami.Dialog {
         id: fontSettingsDialog
 
-        /// 開くたびに読み直すと選択が外れるので、最初の1回だけ読む
+        /// 最初に開いたときに読む
         property var fonts: []
 
         /// フォントの選択欄
@@ -651,7 +651,8 @@ Kirigami.ApplicationWindow {
             model: fontSettingsDialog.fonts
             textRole: "text"
             valueRole: "value"
-            currentIndex: settingIndex
+            // モデルが変わると選択が先頭に戻る。バインディングでは戻らない
+            onModelChanged: currentIndex = settingIndex
             onActivated: index => {
                 settings[root.fontSettingNames[slot]] = fontSettingsDialog.fonts[index].value;
                 root.applyFont(slot);
