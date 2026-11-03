@@ -654,8 +654,10 @@ Kirigami.ApplicationWindow {
             // モデルが変わると選択が先頭に戻る。バインディングでは戻らない
             onModelChanged: currentIndex = settingIndex
             onActivated: index => {
-                settings[root.fontSettingNames[slot]] = fontSettingsDialog.fonts[index].value;
-                root.applyFont(slot);
+                const value = fontSettingsDialog.fonts[index].value;
+                if (root.succeeded(editor.setFont(slot, value))) {
+                    settings[root.fontSettingNames[slot]] = value;
+                }
                 currentIndex = settingIndex;
             }
         }
