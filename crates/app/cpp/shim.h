@@ -1,6 +1,7 @@
 // cxx-qtが直接扱えないQt APIの薄いラッパー
 #pragma once
 
+#include <QApplication>
 #include <QClipboard>
 #include <QGlyphRun>
 #include <QGuiApplication>
@@ -14,6 +15,7 @@
 #include <QPixmap>
 #include <QPixmapCache>
 #include <QPointF>
+#include <QQmlApplicationEngine>
 #include <QRawFont>
 #include <QWheelEvent>
 #include <QtQuick/QQuickPaintedItem>
@@ -23,6 +25,24 @@
 #include "rust/cxx.h"
 
 namespace shim {
+
+// KDEのプラットフォームテーマは、QApplicationで動くアプリにしかKDEのファイルダイアログを出さない
+inline int run_application(const QString& url) {
+    // QApplicationはargcとargvを参照し続ける
+    // ponytail: Qtのコマンドライン引数（-style など）は渡さない。必要になったら実際の引数を渡す
+    static int argc = 1;
+    static char name[] = "kakikotoba";
+    static char* argv[] = {name, nullptr};
+    QApplication app(argc, argv);
+    // QMLのSettingsの保存先を決めるのに必要
+    QCoreApplication::setOrganizationName(QStringLiteral("kakikotoba"));
+    QCoreApplication::setApplicationName(QStringLiteral("kakikotoba"));
+    // Waylandでは、この名前の .desktop からウィンドウのアイコンを決める
+    QGuiApplication::setDesktopFileName(QStringLiteral("kakikotoba"));
+    QQmlApplicationEngine engine;
+    engine.load(QUrl(url));
+    return app.exec();
+}
 
 template <typename Item>
 void init_item(Item& item) {

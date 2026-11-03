@@ -4,6 +4,7 @@ fn main() {
     println!("cargo::rerun-if-changed=cpp/shim.h");
     CxxQtBuilder::new_qml_module(QmlModule::new("kakikotoba").qml_files(["qml/main.qml"]))
         .qt_module("Quick")
+        .qt_module("Widgets")
         .include_dir("cpp")
         .file("src/item.rs")
         .build();

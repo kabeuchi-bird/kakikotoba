@@ -10,7 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
+use cxx_qt_lib::QString;
 use kakikotoba_core::Buffer;
 
 use editor::Editor;
@@ -41,20 +41,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    let mut app = QGuiApplication::new();
-    // QMLのSettingsの保存先を決めるのに必要
-    if let Some(mut app) = app.as_mut() {
-        app.as_mut().set_organization_name(&QString::from("kakikotoba"));
-        app.as_mut().set_application_name(&QString::from("kakikotoba"));
-    }
-    // Waylandでは、この名前の .desktop からウィンドウのアイコンを決める
-    QGuiApplication::set_desktop_file_name(&QString::from("kakikotoba"));
-    let mut engine = QQmlApplicationEngine::new();
-    if let Some(engine) = engine.as_mut() {
-        engine.load(&QUrl::from("qrc:/qt/qml/kakikotoba/qml/main.qml"));
-    }
-    match app.as_mut().map(|app| app.exec()) {
-        Some(0) => ExitCode::SUCCESS,
+    match item::qobject::run_application(&QString::from("qrc:/qt/qml/kakikotoba/qml/main.qml")) {
+        0 => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
     }
 }
