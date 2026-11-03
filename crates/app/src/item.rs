@@ -11,8 +11,9 @@ use cxx_qt_lib::{QColor, QRectF, QString, QUrl, QVariant};
 use kakikotoba_layout::Rect;
 use kakikotoba_layout::page::{PageFormat, PageSettings, SpreadMode};
 
-use crate::editor::{Editor, Fonts, VisibleGlyph};
+use crate::editor::{Editor, VisibleGlyph};
 use crate::fcitx::{self, NativeKey, QtKey};
+use crate::fonts::{self, FontSlot, Fonts};
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -185,6 +186,17 @@ pub mod qobject {
         #[cxx_name = "setPageOptions"]
         fn set_page_options(self: Pin<&mut VerticalEditor>, format: i32, chars: i32, lines: i32, spread: i32);
 
+        /// 選べるフォントを `表示名\tパス` の行にして返す
+        #[qinvokable]
+        #[cxx_name = "fontList"]
+        fn font_list(self: &VerticalEditor) -> QString;
+
+        /// `slot` は0が編集用、1がページ本文用、2が太字。`path` が空なら既定のフォント。
+        /// 失敗時にエラーメッセージ、成功時に空文字列を返す
+        #[qinvokable]
+        #[cxx_name = "setFont"]
+        fn set_font(self: Pin<&mut VerticalEditor>, slot: i32, path: &QString) -> QString;
+
         #[qinvokable]
         #[cxx_name = "metadataText"]
         fn metadata_text(self: &VerticalEditor) -> QString;
@@ -281,8 +293,8 @@ pub struct VerticalEditorRust {
     composing: bool,
     document_name: QString,
     editor: StartupEditor,
-    /// `(ゴシックか, 字サイズの1/64px)` ごとのフォント
-    raw_fonts: HashMap<(bool, u32), UniquePtr<qobject::QRawFont>>,
+    /// `(フォントの用途, 補うフォントの番号, 字サイズの1/64px)` ごとのフォント
+    raw_fonts: RawFonts,
     /// ページモードからのクリックで編集モードに戻った後、そのドラッグを選択にしない
     ignore_drag: bool,
     /// fcitx5に接続中だけある。ないときはQtのIM経路を使う
@@ -307,21 +319,21 @@ impl cxx_qt::Initialize for qobject::VerticalEditor {
 
 /// 同じ字サイズと向きのグリフをまとめて描く。
 fn draw_visible_glyphs(
-    raw_fonts: &mut HashMap<(bool, u32), UniquePtr<qobject::QRawFont>>,
+    raw_fonts: &mut RawFonts,
     fonts: &Fonts,
     mut painter: Pin<&mut qobject::QPainter>,
     glyphs: impl Iterator<Item = VisibleGlyph>,
     color_of: impl Fn(u8) -> QColor,
 ) {
-    // 色、字サイズ、向きごとにまとめて描く
-    let mut batches: GlyphBatches<(u8, u32, bool)> = HashMap::new();
+    // フォント、色、字サイズ、向きごとにまとめて描く
+    let mut batches: GlyphBatches<(u16, u8, u32, bool)> = HashMap::new();
     for glyph in glyphs {
-        let (ids, positions) = batches.entry((glyph.color, glyph.size.to_bits(), glyph.rotated)).or_default();
+        let (ids, positions) = batches.entry((glyph.font, glyph.color, glyph.size.to_bits(), glyph.rotated)).or_default();
         ids.push(glyph.id);
         positions.extend([glyph.x, glyph.y]);
     }
-    for ((color, size, rotated), (ids, positions)) in &batches {
-        let font = raw_font(raw_fonts, fonts, false, f32::from_bits(*size));
+    for ((font, color, size, rotated), (ids, positions)) in &batches {
+        let font = raw_font(raw_fonts, fonts, FontSlot::Edit, *font, f32::from_bits(*size));
         let color = color_of(*color);
         if *rotated {
             qobject::draw_glyphs_rotated(painter.as_mut(), font, &color, ids, positions);
@@ -355,14 +367,15 @@ fn paint_pages(rust: &mut VerticalEditorRust, mut painter: Pin<&mut qobject::QPa
             qobject::draw_wave(painter.as_mut(), x, y, w, h, &rust.text_color);
         }
         // 字サイズとフォントごとにまとめて描く
-        let mut batches: GlyphBatches<(bool, u32)> = HashMap::new();
+        let mut batches: GlyphBatches<(bool, u16, u32)> = HashMap::new();
         for glyph in &page.glyphs {
-            let (ids, positions) = batches.entry((glyph.sans, glyph.scale.to_bits())).or_default();
+            let (ids, positions) = batches.entry((glyph.sans, glyph.font, glyph.scale.to_bits())).or_default();
             ids.push(glyph.id as u32);
             positions.extend([placed.x + glyph.x * em, placed.y + glyph.y * em]);
         }
-        for ((sans, scale), (ids, positions)) in &batches {
-            let font = raw_font(&mut rust.raw_fonts, &rust.editor.0.fonts, *sans, f32::from_bits(*scale) * em);
+        for ((sans, font, scale), (ids, positions)) in &batches {
+            let slot = if *sans { FontSlot::Bold } else { FontSlot::Page };
+            let font = raw_font(&mut rust.raw_fonts, &rust.editor.0.fonts, slot, *font, f32::from_bits(*scale) * em);
             qobject::draw_glyphs(painter.as_mut(), font, &rust.text_color, ids, positions);
         }
     }
@@ -404,21 +417,22 @@ fn utf16_to_chars(text: &str, utf16: usize) -> usize {
 const RAW_FONT_CACHE_LIMIT: usize = 64;
 /// キーごとのグリフ番号と位置（x, y の交互の並び）
 type GlyphBatches<K> = HashMap<K, (Vec<u32>, Vec<f32>)>;
+type RawFonts = HashMap<(FontSlot, u16, u32), UniquePtr<qobject::QRawFont>>;
 
 /// 字サイズごとのフォントを返す。ウィンドウの拡縮で増えるので、上限を超えたら捨てる。
 fn raw_font<'a>(
-    cache: &'a mut HashMap<(bool, u32), UniquePtr<qobject::QRawFont>>,
+    cache: &'a mut RawFonts,
     fonts: &Fonts,
-    sans: bool,
+    slot: FontSlot,
+    font: u16,
     size: f32,
 ) -> &'a qobject::QRawFont {
     if cache.len() >= RAW_FONT_CACHE_LIMIT {
         cache.clear();
     }
-    let key = (sans, (size * 64.0).round() as u32);
+    let key = (slot, font, (size * 64.0).round() as u32);
     let font = cache.entry(key).or_insert_with(|| {
-        let path = if sans { &fonts.sans_path } else { &fonts.serif_path };
-        qobject::new_raw_font(&QString::from(path.as_str()), size as f64)
+        qobject::new_raw_font(&QString::from(fonts.path(slot, font).as_str()), size as f64)
     });
     font.as_ref().expect("生成済み")
 }
@@ -589,6 +603,26 @@ impl qobject::VerticalEditor {
         };
         self.as_mut().editor_mut().set_page_settings(settings);
         self.refresh();
+    }
+
+    fn font_list(&self) -> QString {
+        let lines: Vec<String> = fonts::list_fonts().iter().map(|(label, path)| format!("{label}\t{path}")).collect();
+        QString::from(lines.join("\n").as_str())
+    }
+
+    fn set_font(mut self: Pin<&mut Self>, slot: i32, path: &QString) -> QString {
+        let slot = match slot {
+            0 => FontSlot::Edit,
+            1 => FontSlot::Page,
+            _ => FontSlot::Bold,
+        };
+        let rust = self.as_mut().rust_mut().get_mut();
+        let result = rust.editor.0.set_font(slot, &String::from(path));
+        if result == Ok(true) {
+            rust.raw_fonts.clear();
+        }
+        self.refresh();
+        QString::from(result.err().unwrap_or_default().as_str())
     }
 
     fn metadata_text(&self) -> QString {

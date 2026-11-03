@@ -2,34 +2,19 @@
 
 mod editor;
 mod fcitx;
+mod fonts;
 mod item;
 mod page_view;
 
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
-use std::{fs, io};
+use std::process::ExitCode;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 use kakikotoba_core::Buffer;
-use kakikotoba_layout::Font;
 
-use editor::{Editor, Fonts};
-
-// 単に serif:lang=ja で探すと、中国語フォントが選ばれる環境がある
-// ponytail: 候補を固定。フォント設定を作るときに選択可能に
-const SERIF_PATTERN: &str = "Noto Serif CJK JP,Source Han Serif JP,IPAexMincho,IPAMincho,serif:lang=ja";
-const SANS_PATTERN: &str = "Noto Sans CJK JP,Source Han Sans JP,IPAexGothic,IPAGothic,sans:lang=ja:bold";
-
-fn find_font(pattern: &str) -> Result<String, String> {
-    let output = Command::new("fc-match")
-        .args(["-f", "%{file}", pattern])
-        .output()
-        .map_err(|e| format!("fc-match を実行できません: {e}"))?;
-    String::from_utf8(output.stdout)
-        .ok()
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| "日本語フォントが見つかりません".to_owned())
-}
+use editor::Editor;
+use fonts::Fonts;
 
 fn open_buffer(path: &Path) -> io::Result<Buffer> {
     match Buffer::load(path) {
@@ -45,18 +30,7 @@ fn startup() -> Result<Editor, String> {
         Some(path) => open_buffer(path).map_err(|e| format!("{}: {e}", path.display()))?,
         None => Buffer::new(""),
     };
-    let (serif, serif_path) = load_font(SERIF_PATTERN)?;
-    let (sans, sans_path) = load_font(SANS_PATTERN)?;
-    Ok(Editor::new(buffer, path, Fonts { serif, serif_path, sans, sans_path }))
-}
-
-fn load_font(pattern: &str) -> Result<(Font<'static>, String), String> {
-    let path = find_font(pattern)?;
-    let data = fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
-    // フォントはアプリ終了まで使い続けるので解放しない
-    // ponytail: QRawFontがコレクションの先頭しか読めないため番号は0固定。先頭以外を使うならQRawFontの読み込みごと見直す
-    let font = Font::new(Box::leak(data.into_boxed_slice()), 0).ok_or_else(|| format!("{path}: フォントを読めません"))?;
-    Ok((font, path))
+    Ok(Editor::new(buffer, path, Fonts::load_defaults()?))
 }
 
 fn main() -> ExitCode {
