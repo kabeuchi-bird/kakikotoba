@@ -229,6 +229,8 @@ mod tests {
     use super::*;
 
     #[test]
+    // 範囲の列（`chars`）と比べるので、範囲が1つでも配列のままでよい
+    #[allow(clippy::single_range_in_vec_init)]
     fn candidates_keep_their_order_and_skip_later_faces_and_color_fonts() {
         let list = "/b.ttf\t0\tFalse\t20-7e 3042\n/c.ttc\t1\tFalse\t3042\n/e.ttf\t0\tTrue\t3042\n/a.ttf\t0\tFalse\t3042-3044\n壊れた行\n";
         let candidates = parse_candidates(list);

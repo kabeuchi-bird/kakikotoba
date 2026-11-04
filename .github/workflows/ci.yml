@@ -32,11 +32,12 @@ jobs:
   fedora:
     runs-on: ubuntu-latest
     container: fedora:latest
+    # lldかgoldがないと、cxx-qtがld.bfdでリンクしてQt Quickのシンボルを解決できない
     steps:
       - name: Install dependencies
         run: >-
           dnf install -y
-          git gcc-c++ rust cargo
+          git gcc-c++ rust cargo lld
           qt6-qtbase-devel qt6-qtdeclarative-devel fontconfig
           google-noto-serif-cjk-fonts google-noto-sans-cjk-fonts dejavu-serif-fonts
       - uses: actions/checkout@v4
