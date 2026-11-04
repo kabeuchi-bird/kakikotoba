@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 kakikotoba-markup = { path = "../markup" }
 rustybuzz = "0.20.1"
+
+[dev-dependencies]
+kakikotoba-test-fonts = { path = "../test-fonts" }

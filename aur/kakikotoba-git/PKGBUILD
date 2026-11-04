@@ -9,7 +9,7 @@ url='https://github.com/kabeuchi-bird/kakikotoba'
 license=('MIT')
 depends=('fontconfig' 'gcc-libs' 'glibc' 'hicolor-icon-theme' 'kirigami' 'qt6-base' 'qt6-declarative')
 makedepends=('cargo' 'git')
-# テストが読むフォント。ないとテストが何も確かめずに通る
+# テストが読むフォント。ないとテストが失敗する
 checkdepends=('noto-fonts-cjk' 'ttf-dejavu')
 optdepends=('fcitx5: vertical conversion candidates drawn in the editor'
             'noto-fonts-cjk: preferred Japanese font')

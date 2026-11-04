@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  QMAKE: /usr/bin/qmake6
+
+# ビルドとテストにKirigamiは要らない（QMLから実行時に読むだけ）
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    # AURの頒布先。clippyはここだけで走らせる（Rustの版ごとにlintが変わるため）
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed
+          base-devel git rust
+          qt6-base qt6-declarative fontconfig dbus
+          noto-fonts-cjk ttf-dejavu
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked --workspace
+
+  fedora:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    # lldかgoldがないと、cxx-qtがld.bfdでリンクしてQt Quickのシンボルを解決できない
+    steps:
+      - name: Install dependencies
+        run: >-
+          dnf install -y
+          git gcc-c++ rust cargo lld
+          qt6-qtbase-devel qt6-qtdeclarative-devel fontconfig dbus-daemon
+          google-noto-serif-cjk-fonts google-noto-sans-cjk-fonts dejavu-serif-fonts
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --locked --workspace
+
+  ubuntu:
+    # Debian系の代表。配布版のRustはedition 2024やlet chainsに足りないため、rustupの安定版を使う
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install dependencies
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y --no-install-recommends
+          qt6-base-dev qt6-declarative-dev qmake6 fontconfig
+          fonts-noto-cjk fonts-dejavu-core
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --locked --workspace

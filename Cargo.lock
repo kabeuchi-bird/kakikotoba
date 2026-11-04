@@ -650,6 +650,7 @@ dependencies = [
  "kakikotoba-core",
  "kakikotoba-layout",
  "kakikotoba-markup",
+ "kakikotoba-test-fonts",
  "serde",
  "zbus",
 ]
@@ -666,6 +667,7 @@ name = "kakikotoba-layout"
 version = "0.1.0"
 dependencies = [
  "kakikotoba-markup",
+ "kakikotoba-test-fonts",
  "rustybuzz",
 ]
 
@@ -675,6 +677,10 @@ version = "0.1.0"
 dependencies = [
  "pulldown-cmark",
 ]
+
+[[package]]
+name = "kakikotoba-test-fonts"
+version = "0.1.0"
 
 [[package]]
 name = "libc"

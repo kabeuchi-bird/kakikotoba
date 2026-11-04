@@ -229,6 +229,8 @@ mod tests {
     use super::*;
 
     #[test]
+    // 範囲の列（`chars`）と比べるので、範囲が1つでも配列のままでよい
+    #[allow(clippy::single_range_in_vec_init)]
     fn candidates_keep_their_order_and_skip_later_faces_and_color_fonts() {
         let list = "/b.ttf\t0\tFalse\t20-7e 3042\n/c.ttc\t1\tFalse\t3042\n/e.ttf\t0\tTrue\t3042\n/a.ttf\t0\tFalse\t3042-3044\n壊れた行\n";
         let candidates = parse_candidates(list);
@@ -240,15 +242,10 @@ mod tests {
 
     #[test]
     fn missing_character_is_found_through_fontconfig_and_cached() {
-        let Ok(fonts) = Fonts::from_file("/usr/share/fonts/TTF/DejaVuSerif.ttf") else {
-            eprintln!("スキップ: DejaVuSerif.ttf がない");
-            return;
-        };
+        let path = kakikotoba_test_fonts::path(kakikotoba_test_fonts::LATIN_SERIF);
+        let fonts = Fonts::from_file(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
         let found = fonts.shared.borrow_mut().fallback(SERIF_PATTERN, 'あ').map(|(id, _)| id);
-        let Some(id) = found else {
-            eprintln!("スキップ: 日本語フォントがない");
-            return;
-        };
+        let id = found.expect("fontconfigで日本語フォントが見つからない（noto-fonts-cjk を入れる）");
         assert_eq!(fonts.shared.borrow_mut().fallback(SERIF_PATTERN, 'い').map(|(id, _)| id), Some(id));
         assert_eq!(fonts.shared.borrow().loaded.len(), 1);
         assert_ne!(fonts.path(FontSlot::Edit, id), fonts.path(FontSlot::Edit, 0));
