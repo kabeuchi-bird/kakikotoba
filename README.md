@@ -119,6 +119,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
+テストは実フォントで組版を確かめるため、Noto CJK と DejaVu（Arch Linux 系では `noto-fonts-cjk` と `ttf-dejavu`）が必要です。フォントがなければテストは失敗します。プッシュとプルリクエストのたびに、GitHub Actions が Arch Linux のコンテナでテストと clippy を実行します。
+
 | クレート | 役割 |
 |---|---|
 | `crates/core` | テキストバッファ、Undo/Redo |

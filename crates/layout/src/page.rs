@@ -649,10 +649,7 @@ mod tests {
 
     fn with_fonts(test: impl FnOnce(&Font)) {
         let path = "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc";
-        let Ok(data) = std::fs::read(path) else {
-            eprintln!("スキップ: {path} がない");
-            return;
-        };
+        let data = std::fs::read(path).unwrap_or_else(|e| panic!("テスト用のフォントがない（noto-fonts-cjk と ttf-dejavu を入れる）: {path}: {e}"));
         test(&Font::new(&data, 0).expect("フォントを読めない"));
     }
 

@@ -521,13 +521,10 @@ mod tests {
 
     const SETTINGS: Settings = Settings { font_size: 10.0, chars_per_column: 5, column_pitch: 16.0 };
 
-    /// 実フォントが必要な検証。無い環境ではスキップする。
+    /// 実フォントが必要な検証。フォントがなければ失敗させる（何も確かめずに通さない）。
     fn with_font(test: impl FnOnce(&Font)) {
         let path = "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc";
-        let Ok(data) = std::fs::read(path) else {
-            eprintln!("スキップ: {path} がない");
-            return;
-        };
+        let data = std::fs::read(path).unwrap_or_else(|e| panic!("テスト用のフォントがない（noto-fonts-cjk と ttf-dejavu を入れる）: {path}: {e}"));
         test(&Font::new(&data, 0).expect("フォントを読めない"));
     }
 
@@ -545,13 +542,12 @@ mod tests {
 
     #[test]
     fn missing_characters_use_the_fallback_and_keep_their_positions() {
-        let read = |path: &str| std::fs::read(path).ok().map(|data| &*Box::leak(data.into_boxed_slice()));
-        let (Some(latin), Some(cjk)) =
-            (read("/usr/share/fonts/TTF/DejaVuSerif.ttf"), read("/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc"))
-        else {
-            eprintln!("スキップ: テスト用のフォントがない");
-            return;
+        let read = |path: &str| {
+            let data = std::fs::read(path).unwrap_or_else(|e| panic!("テスト用のフォントがない（noto-fonts-cjk と ttf-dejavu を入れる）: {path}: {e}"));
+            &*Box::leak(data.into_boxed_slice())
         };
+        let latin = read("/usr/share/fonts/TTF/DejaVuSerif.ttf");
+        let cjk = read("/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc");
         let cjk: &'static Font<'static> = Box::leak(Box::new(Font::new(cjk, 0).unwrap()));
         let primary = Font::new(latin, 0).unwrap().with_fallback(Box::new(move |c| {
             (cjk.face.glyph_index(c).is_some() && c != '\u{1f600}').then_some((7, cjk))

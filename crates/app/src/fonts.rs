@@ -240,15 +240,10 @@ mod tests {
 
     #[test]
     fn missing_character_is_found_through_fontconfig_and_cached() {
-        let Ok(fonts) = Fonts::from_file("/usr/share/fonts/TTF/DejaVuSerif.ttf") else {
-            eprintln!("スキップ: DejaVuSerif.ttf がない");
-            return;
-        };
+        let path = "/usr/share/fonts/TTF/DejaVuSerif.ttf";
+        let fonts = Fonts::from_file(path).unwrap_or_else(|e| panic!("テスト用のフォントがない（noto-fonts-cjk と ttf-dejavu を入れる）: {path}: {e}"));
         let found = fonts.shared.borrow_mut().fallback(SERIF_PATTERN, 'あ').map(|(id, _)| id);
-        let Some(id) = found else {
-            eprintln!("スキップ: 日本語フォントがない");
-            return;
-        };
+        let id = found.expect("fontconfigで日本語フォントが見つからない（noto-fonts-cjk を入れる）");
         assert_eq!(fonts.shared.borrow_mut().fallback(SERIF_PATTERN, 'い').map(|(id, _)| id), Some(id));
         assert_eq!(fonts.shared.borrow().loaded.len(), 1);
         assert_ne!(fonts.path(FontSlot::Edit, id), fonts.path(FontSlot::Edit, 0));
