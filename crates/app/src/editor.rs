@@ -715,8 +715,8 @@ mod tests {
     use kakikotoba_markup::highlight::Kind;
 
     fn with_editor(text: &str, test: impl FnOnce(&mut Editor)) {
-        let path = "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc";
-        let fonts = Fonts::from_file(path).unwrap_or_else(|e| panic!("テスト用のフォントがない（noto-fonts-cjk と ttf-dejavu を入れる）: {path}: {e}"));
+        let path = kakikotoba_test_fonts::path(kakikotoba_test_fonts::SERIF_CJK);
+        let fonts = Fonts::from_file(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
         let mut editor = Editor::new(Buffer::new(text), None, fonts);
         editor.resize(400.0, (CHARS_PER_COLUMN + HANGING_CHARS) as f32 * 10.0 + 2.0 * MARGIN);
         test(&mut editor);
@@ -1145,8 +1145,8 @@ mod tests {
 
     #[test]
     fn font_change_affects_only_its_slot_and_keeps_the_open_page() {
-        let other = "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc";
-        assert!(std::path::Path::new(other).exists(), "テスト用のフォントがない（noto-fonts-cjk と ttf-dejavu を入れる）: {other}");
+        let other = kakikotoba_test_fonts::path(kakikotoba_test_fonts::SANS_CJK_BOLD);
+        let other = other.as_str();
         with_editor("あ\n[newpage]\nい", |e| {
             let page_font = e.fonts.page.path.clone();
             assert_eq!(e.set_font(FontSlot::Edit, other), Ok(true));

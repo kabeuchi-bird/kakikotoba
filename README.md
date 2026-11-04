@@ -119,7 +119,15 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-テストは実フォントで組版を確かめるため、Noto CJK と DejaVu（Arch Linux 系では `noto-fonts-cjk` と `ttf-dejavu`）が必要です。フォントがなければテストは失敗します。プッシュとプルリクエストのたびに、GitHub Actions が Arch Linux のコンテナでテストと clippy を実行します。
+テストは実フォントで組版を確かめるため、Noto CJK（明朝の Regular とゴシックの Bold）と DejaVu Serif が必要です。場所は fontconfig で探します。フォントがなければテストは失敗します。
+
+| ディストリビューション | パッケージ |
+|---|---|
+| Arch Linux 系 | `noto-fonts-cjk` `ttf-dejavu` |
+| Fedora | `google-noto-serif-cjk-fonts` `google-noto-sans-cjk-fonts` `dejavu-serif-fonts` |
+| Debian / Ubuntu | `fonts-noto-cjk` `fonts-dejavu-core` |
+
+プッシュとプルリクエストのたびに、GitHub Actions が Arch Linux、Fedora、Ubuntu でテストを実行します。clippy は Arch Linux だけで実行します。
 
 | クレート | 役割 |
 |---|---|

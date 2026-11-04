@@ -31,6 +31,7 @@ crates/
   layout/    縦組みレイアウト。入力: テキスト・設定 / 出力: グリフ配置列・カーソル矩形
   markup/    方言別パーサ → 共通AST（本文の各ノードに元ソースのspanを保持）
   app/       cxx-qtによるQt統合、UI
+  test-fonts/ テストが読む実フォントをfontconfigで探す（dev-dependencyのみ）
 ```
 
 - `layout` と `markup` は純Rustクレートとし、GUIに依存させない

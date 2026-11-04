@@ -648,9 +648,8 @@ mod tests {
     };
 
     fn with_fonts(test: impl FnOnce(&Font)) {
-        let path = "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc";
-        let data = std::fs::read(path).unwrap_or_else(|e| panic!("テスト用のフォントがない（noto-fonts-cjk と ttf-dejavu を入れる）: {path}: {e}"));
-        test(&Font::new(&data, 0).expect("フォントを読めない"));
+        let data = kakikotoba_test_fonts::read(kakikotoba_test_fonts::SERIF_CJK);
+        test(&Font::new(data, 0).expect("フォントを読めない"));
     }
 
     fn paged(text: &str, font: &Font, settings: PageSettings) -> PagedDocument {
