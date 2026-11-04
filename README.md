@@ -119,7 +119,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-テストは実フォントで組版を確かめるため、Noto CJK（明朝の Regular とゴシックの Bold）と DejaVu Serif が必要です。場所は fontconfig で探します。フォントがなければテストは失敗します。
+テストは実フォントで組版を確かめるため、Noto CJK（明朝の Regular とゴシックの Bold）と DejaVu Serif が必要です。場所は fontconfig で探します。フォントがなければテストは失敗します。fcitx5 との接続のテストは `dbus-daemon` で専用のバスを立てるため、これも必要です。
 
 | ディストリビューション | パッケージ |
 |---|---|

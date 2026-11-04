@@ -20,7 +20,7 @@ jobs:
         run: >-
           pacman -Syu --noconfirm --needed
           base-devel git rust
-          qt6-base qt6-declarative fontconfig
+          qt6-base qt6-declarative fontconfig dbus
           noto-fonts-cjk ttf-dejavu
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -38,7 +38,7 @@ jobs:
         run: >-
           dnf install -y
           git gcc-c++ rust cargo lld
-          qt6-qtbase-devel qt6-qtdeclarative-devel fontconfig
+          qt6-qtbase-devel qt6-qtdeclarative-devel fontconfig dbus-daemon
           google-noto-serif-cjk-fonts google-noto-sans-cjk-fonts dejavu-serif-fonts
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
