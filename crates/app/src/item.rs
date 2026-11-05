@@ -721,7 +721,7 @@ impl qobject::VerticalEditor {
     fn restore_recovery(mut self: Pin<&mut Self>) -> QString {
         self.reset_ime();
         let result = self.as_mut().editor_mut().restore_recovery();
-        self.finish_file_operation(result.map_err(|e| format!("復元した写しを移せません: {e}")))
+        self.finish_file_operation(result.map_err(|e| format!("復元した文書の写しを書き出せません（元の写しは残しています）: {e}")))
     }
 
     fn discard_pending_recovery(mut self: Pin<&mut Self>) -> QString {

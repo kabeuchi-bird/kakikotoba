@@ -101,6 +101,8 @@ pub struct Editor {
     recovery: Option<Session>,
     /// 起動時に見つかった、異常終了した起動の写し（新しい順）
     orphans: Vec<Snapshot>,
+    /// 復元した元の写し。この起動の写しを書けたとき、または保存・破棄したときに消す
+    superseded: Option<Snapshot>,
     /// 直前の自動保存が失敗したか。失敗が続く間は通知しない
     autosave_failed: bool,
 }
@@ -144,6 +146,7 @@ impl Editor {
             page_view: None,
             recovery: None,
             orphans: Vec::new(),
+            superseded: None,
             autosave_failed: false,
         };
         editor.relayout();
@@ -721,6 +724,9 @@ impl Editor {
         } else {
             session.remove()
         };
+        if result.is_ok() {
+            self.remove_superseded();
+        }
         let failed_before = std::mem::replace(&mut self.autosave_failed, result.is_err());
         result.err().filter(|_| !failed_before)
     }
@@ -729,6 +735,15 @@ impl Editor {
     fn remove_recovery(&mut self) {
         if let Some(session) = &mut self.recovery {
             let _ = session.remove();
+        }
+        // 復元した文書を保存したか破棄したので、元の写しも要らない
+        self.remove_superseded();
+    }
+
+    /// 復元した元の写しを消す。消せなければ持ったままにして、次の機会にまた消しにいく。
+    fn remove_superseded(&mut self) {
+        if self.superseded.as_ref().is_some_and(|snapshot| snapshot.remove().is_ok()) {
+            self.superseded = None;
         }
     }
 
@@ -743,20 +758,23 @@ impl Editor {
         self.orphans.first()
     }
 
-    /// 写しの本文を、元のパスに結び付けた未保存の文書として開き、写しを消す。
+    /// 写しの本文を、元のパスに結び付けた未保存の文書として開く。
+    /// 元の写しは、この起動の写しを書けてから消す。次の自動保存までに落ちても本文を失わないように。
+    /// この起動の写しを書けなければエラーを返し、元の写しは残す（後で書けたとき、または保存・破棄したときに消す）。
     pub fn restore_recovery(&mut self) -> io::Result<()> {
         if self.orphans.is_empty() {
             return Ok(());
         }
         let snapshot = self.orphans.remove(0);
         self.replace_document(Buffer::recovered(&snapshot.text), snapshot.path.clone());
-        // 古い写しは、この起動の写しを書けてから消す。次の自動保存までに落ちても本文を失わないように
+        self.superseded = Some(snapshot);
         if let Some(session) = &mut self.recovery {
             let written = session.write(self.path.as_deref(), self.buffer.rope(), self.buffer.revision());
             self.autosave_failed = written.is_err();
             written?;
         }
-        snapshot.remove()
+        self.remove_superseded();
+        Ok(())
     }
 
     pub fn discard_pending_recovery(&mut self) -> io::Result<()> {
@@ -1356,6 +1374,51 @@ mod tests {
             e.enable_recovery(&dir);
             e.discard_pending_recovery().unwrap();
             assert!(!older.exists());
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn restored_copy_is_kept_until_this_session_writes_its_own_or_the_document_is_saved() {
+        with_editor("", |e| {
+            let dir = recovery_dir("restore-failure");
+            std::fs::create_dir_all(&dir).unwrap();
+            let orphan = |name: &str| {
+                let file = dir.join(name);
+                std::fs::write(&file, "kakikotoba-recovery 1\npid 0\nsaved 1000\npath \n\n復元する本文").unwrap();
+                file
+            };
+            // この起動の写しの場所を、中身のあるディレクトリで塞ぐと書き出せない
+            let block = |e: &Editor| {
+                let own = e.recovery.as_ref().unwrap().file().to_path_buf();
+                std::fs::create_dir_all(own.join("塞ぐ")).unwrap();
+                own
+            };
+
+            // 後で書けたら消す
+            let first = orphan("1-0.kakikotoba");
+            e.enable_recovery(&dir);
+            let own = block(e);
+            assert!(e.restore_recovery().is_err());
+            assert_eq!(text(e), "復元する本文");
+            assert!(first.exists(), "この起動の写しを書けないうちは、元の写しを残す");
+            assert!(e.autosave().is_none(), "失敗は復元のときに知らせた");
+            assert!(first.exists());
+            std::fs::remove_dir_all(&own).unwrap();
+            e.insert("。");
+            assert!(e.autosave().is_none());
+            assert!(own.is_file());
+            assert!(!first.exists(), "この起動の写しを書けたら、元の写しを消す");
+
+            // 書けないまま保存したら消す
+            e.stop_recovery();
+            let second = orphan("2-0.kakikotoba");
+            e.enable_recovery(&dir);
+            let own = block(e);
+            assert!(e.restore_recovery().is_err());
+            e.save_as(dir.join("本文.txt")).unwrap();
+            assert!(!second.exists(), "保存したら、元の写しは要らない");
+            std::fs::remove_dir_all(&own).unwrap();
             std::fs::remove_dir_all(&dir).unwrap();
         });
     }

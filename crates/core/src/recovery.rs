@@ -60,17 +60,22 @@ impl Session {
         let mut tmp_name = self.file.file_name().expect("名前は自分で付けた").to_os_string();
         tmp_name.push(".tmp");
         let tmp = self.file.with_file_name(tmp_name);
-        // 新しい写しを確かめてから元の写しを消す使い方があるので、名前の変更まで確定させる
-        let result = write_snapshot(&tmp, path, text)
-            .and_then(|()| fs::rename(&tmp, &self.file))
-            .and_then(|()| File::open(dir)?.sync_all());
-        if result.is_err() {
+        if let Err(e) = write_snapshot(&tmp, path, text).and_then(|()| fs::rename(&tmp, &self.file)) {
             let _ = fs::remove_file(&tmp);
+            return Err(e);
         }
-        result?;
-        self.written = Some(revision);
+        // 名前を変えた時点でファイルはあるので、同期に失敗しても `remove` で消せるようにする
         self.on_disk = true;
+        // 新しい写しを確かめてから元の写しを消す使い方があるので、名前の変更まで確定させる。
+        // 確定できなければ `written` を更新せず、次の呼び出しで書き直す
+        File::open(dir)?.sync_all()?;
+        self.written = Some(revision);
         Ok(())
+    }
+
+    /// 写しのパス。
+    pub fn file(&self) -> &Path {
+        &self.file
     }
 
     /// 写しを消す。もともとなければ何もしない。
