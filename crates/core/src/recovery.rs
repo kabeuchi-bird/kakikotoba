@@ -12,7 +12,7 @@
 //! ```
 
 use std::ffi::OsString;
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -36,15 +36,17 @@ pub fn default_dir() -> Option<PathBuf> {
 /// この起動で書き出す写し。
 pub struct Session {
     file: PathBuf,
-    /// 最後に書き出した本文の `Buffer::revision`。写しがなければ `None`
+    /// 最後に書き出した本文の `Buffer::revision`。消した後は `None`
     written: Option<u64>,
+    /// 写しのファイルがあるか。消せなかったときは `written` と違って残る
+    on_disk: bool,
 }
 
 impl Session {
     pub fn new(dir: &Path) -> Self {
         let started = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
         let name = format!("{started}-{}.{EXTENSION}", std::process::id());
-        Self { file: dir.join(name), written: None }
+        Self { file: dir.join(name), written: None, on_disk: false }
     }
 
     /// 前回から本文が変わっていれば書き出す。一時ファイルに書いてから置き換える。
@@ -58,22 +60,28 @@ impl Session {
         let mut tmp_name = self.file.file_name().expect("名前は自分で付けた").to_os_string();
         tmp_name.push(".tmp");
         let tmp = self.file.with_file_name(tmp_name);
-        let result = write_snapshot(&tmp, path, text).and_then(|()| fs::rename(&tmp, &self.file));
+        // 新しい写しを確かめてから元の写しを消す使い方があるので、名前の変更まで確定させる
+        let result = write_snapshot(&tmp, path, text)
+            .and_then(|()| fs::rename(&tmp, &self.file))
+            .and_then(|()| File::open(dir)?.sync_all());
         if result.is_err() {
             let _ = fs::remove_file(&tmp);
         }
         result?;
         self.written = Some(revision);
+        self.on_disk = true;
         Ok(())
     }
 
     /// 写しを消す。もともとなければ何もしない。
     pub fn remove(&mut self) -> io::Result<()> {
-        if self.written.is_some() {
+        // revision は文書ごとに0から数えるので、消せなくても次の文書は必ず書き出す
+        self.written = None;
+        if self.on_disk {
             match fs::remove_file(&self.file) {
                 // 消せなければ、次の呼び出しでまた消しにいく
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                _ => self.written = None,
+                _ => self.on_disk = false,
             }
         }
         Ok(())
