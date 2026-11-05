@@ -1,5 +1,7 @@
 //! バッファ、Undo/Redo（操作ログ方式）
 
+pub mod recovery;
+
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::ops::Range;
@@ -21,6 +23,8 @@ pub struct Buffer {
     redo: Vec<Edit>,
     /// 保存時点のUndo段数。保存時点へ戻れなくなったら `None`。
     saved_depth: Option<usize>,
+    /// 本文が変わるたびに増える。自動保存で変化を見分ける
+    revision: u64,
 }
 
 impl Buffer {
@@ -33,12 +37,18 @@ impl Buffer {
         Ok(Self::from_rope(Rope::from_reader(BufReader::new(File::open(path)?))?))
     }
 
+    /// 異常終了から復元した本文。ファイルの中身とは違うので、未保存の状態で始める。
+    pub fn recovered(text: &str) -> Self {
+        Self { saved_depth: None, ..Self::new(text) }
+    }
+
     fn from_rope(rope: Rope) -> Self {
         Self {
             rope,
             undo: Vec::new(),
             redo: Vec::new(),
             saved_depth: Some(0),
+            revision: 0,
         }
     }
 
@@ -101,6 +111,10 @@ impl Buffer {
         self.saved_depth != Some(self.undo.len())
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// `range` を `text` に置き換え、置換後のカーソル位置を返す。
     pub fn replace(&mut self, range: Range<usize>, text: &str) -> usize {
         let at = range.start;
@@ -139,6 +153,7 @@ impl Buffer {
     }
 
     fn apply(&mut self, old: &str, new: &str, at: usize) -> usize {
+        self.revision += 1;
         self.rope.remove(at..at + old.chars().count());
         self.rope.insert(at, new);
         at + new.chars().count()
@@ -200,5 +215,24 @@ mod tests {
 
         assert_eq!(Buffer::load(&path).unwrap().rope().to_string(), "あ");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn revision_changes_on_every_edit_and_recovered_starts_modified() {
+        let mut b = Buffer::new("");
+        let start = b.revision();
+        b.replace(0..0, "あ");
+        let edited = b.revision();
+        assert_ne!(edited, start);
+        b.undo();
+        assert_ne!(b.revision(), edited);
+        // 何も変えない置換では増えない
+        let before = b.revision();
+        b.replace(0..0, "");
+        assert_eq!(b.revision(), before);
+
+        let r = Buffer::recovered("い");
+        assert!(r.is_modified());
+        assert_eq!(r.rope().to_string(), "い");
     }
 }

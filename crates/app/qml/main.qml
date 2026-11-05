@@ -89,6 +89,35 @@ Kirigami.ApplicationWindow {
                 closeConfirmed = true;
                 root.close();
             });
+            return;
+        }
+        // 保存か破棄を選んで閉じるので、写しは要らない
+        editor.stopRecovery();
+    }
+
+    /// 異常終了した起動の写しがあれば、新しい順に1つずつ尋ねる
+    function offerRecovery() {
+        if (!editor.hasPendingRecovery()) {
+            return;
+        }
+        const path = editor.pendingRecoveryPath();
+        const saved = new Date(editor.pendingRecoveryTime()).toLocaleString(Qt.locale(), Locale.ShortFormat);
+        recoveryDialog.subtitle = (path || "無題の文書") + "\n" + saved + " の時点の内容です。"
+            + (editor.pendingRecoveryOriginalIsNewer() ? "\n元のファイルは、この後に更新されています。" : "");
+        recoveryDialog.open();
+    }
+
+    Component.onCompleted: offerRecovery()
+
+    Timer {
+        interval: 5000
+        running: true
+        repeat: true
+        onTriggered: {
+            const error = editor.autosave();
+            if (error) {
+                root.showPassiveNotification(error, "long");
+            }
         }
     }
 
@@ -716,6 +745,44 @@ Kirigami.ApplicationWindow {
             }
         ]
         onRejected: root.pendingAction = null
+        onClosed: editor.forceActiveFocus()
+    }
+
+    Kirigami.PromptDialog {
+        id: recoveryDialog
+        // 外側のクリックで閉じると、どれを選んだか分からない
+        closePolicy: QQC2.Popup.CloseOnEscape
+        title: "保存されずに終了した文書があります"
+        standardButtons: QQC2.Dialog.NoButton
+        customFooterActions: [
+            Kirigami.Action {
+                text: "復元"
+                onTriggered: {
+                    recoveryDialog.close();
+                    root.afterConfirmingUnsaved(() => {
+                        root.succeeded(editor.restoreRecovery());
+                        Qt.callLater(root.offerRecovery);
+                    });
+                }
+            },
+            Kirigami.Action {
+                text: "破棄"
+                onTriggered: {
+                    recoveryDialog.close();
+                    root.succeeded(editor.discardPendingRecovery());
+                    Qt.callLater(root.offerRecovery);
+                }
+            },
+            Kirigami.Action {
+                text: "後で"
+                onTriggered: recoveryDialog.reject()
+            }
+        ]
+        // Escも「後で」として扱う。写しは次の起動でまた尋ねる
+        onRejected: {
+            editor.skipPendingRecovery();
+            Qt.callLater(root.offerRecovery);
+        }
         onClosed: editor.forceActiveFocus()
     }
 

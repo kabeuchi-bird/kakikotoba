@@ -2,9 +2,10 @@
 
 use std::io;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use kakikotoba_core::Buffer;
+use kakikotoba_core::recovery::{self, Session, Snapshot};
 use kakikotoba_layout::page::{PageFormat, PageSettings, SpreadMode};
 use kakikotoba_layout::{Layout, Rect, Run, Settings};
 use kakikotoba_markup::highlight::{Dialect, Highlighter, Options};
@@ -96,6 +97,12 @@ pub struct Editor {
     page_settings: PageSettings,
     /// ページモード中だけある
     page_view: Option<PageView>,
+    /// 自動保存の写し。自動保存しないときは `None`
+    recovery: Option<Session>,
+    /// 起動時に見つかった、異常終了した起動の写し（新しい順）
+    orphans: Vec<Snapshot>,
+    /// 直前の自動保存が失敗したか。失敗が続く間は通知しない
+    autosave_failed: bool,
 }
 
 fn settings_for(height: f32) -> Settings {
@@ -135,6 +142,9 @@ impl Editor {
                 spread: SpreadMode::LeftStart,
             },
             page_view: None,
+            recovery: None,
+            orphans: Vec::new(),
+            autosave_failed: false,
         };
         editor.relayout();
         editor
@@ -566,11 +576,14 @@ impl Editor {
     /// 保存先が未指定なら `InvalidInput` エラーを返す。
     pub fn save(&mut self) -> io::Result<()> {
         let path = self.path.clone().ok_or(io::ErrorKind::InvalidInput)?;
-        self.buffer.save(&path)
+        self.buffer.save(&path)?;
+        self.remove_recovery();
+        Ok(())
     }
 
     pub fn save_as(&mut self, path: PathBuf) -> io::Result<()> {
         self.buffer.save(&path)?;
+        self.remove_recovery();
         self.path = Some(path);
         self.update_highlighter(self.highlighter.options().symbol_forms);
         self.relayout();
@@ -682,6 +695,8 @@ impl Editor {
     }
 
     fn replace_document(&mut self, buffer: Buffer, path: Option<PathBuf>) {
+        // 置き換える前の文書は保存したか、破棄を選んだもの
+        self.remove_recovery();
         self.buffer = buffer;
         self.page_view = None;
         self.path = path;
@@ -689,6 +704,67 @@ impl Editor {
         self.scroll = 0.0;
         self.preedit = None;
         self.edited(0);
+    }
+
+    /// `dir` に自動保存の写しを置く。異常終了した起動の写しも探す。
+    pub fn enable_recovery(&mut self, dir: &Path) {
+        self.recovery = Some(Session::new(dir));
+        self.orphans = recovery::orphans(dir);
+    }
+
+    /// 未保存の変更があれば写しを書き出し、なければ消す。
+    /// 失敗し始めたときだけエラーを返す（続けて失敗している間は `None`）。
+    pub fn autosave(&mut self) -> Option<io::Error> {
+        let session = self.recovery.as_mut()?;
+        let result = if self.buffer.is_modified() {
+            session.write(self.path.as_deref(), self.buffer.rope(), self.buffer.revision())
+        } else {
+            session.remove()
+        };
+        let failed_before = std::mem::replace(&mut self.autosave_failed, result.is_err());
+        result.err().filter(|_| !failed_before)
+    }
+
+    /// 写しを消す。消せなくても、残るのは次の起動で尋ねる写しだけなので、編集は続ける。
+    fn remove_recovery(&mut self) {
+        if let Some(session) = &mut self.recovery {
+            let _ = session.remove();
+        }
+    }
+
+    /// 終了時に呼ぶ。写しを消し、以後は書き出さない。
+    pub fn stop_recovery(&mut self) {
+        self.remove_recovery();
+        self.recovery = None;
+    }
+
+    /// 次に尋ねる、異常終了した起動の写し。
+    pub fn pending_recovery(&self) -> Option<&Snapshot> {
+        self.orphans.first()
+    }
+
+    /// 写しの本文を、元のパスに結び付けた未保存の文書として開き、写しを消す。
+    pub fn restore_recovery(&mut self) -> io::Result<()> {
+        if self.orphans.is_empty() {
+            return Ok(());
+        }
+        let snapshot = self.orphans.remove(0);
+        self.replace_document(Buffer::recovered(&snapshot.text), snapshot.path.clone());
+        snapshot.remove()
+    }
+
+    pub fn discard_pending_recovery(&mut self) -> io::Result<()> {
+        if self.orphans.is_empty() {
+            return Ok(());
+        }
+        self.orphans.remove(0).remove()
+    }
+
+    /// 写しを残したまま、次の起動まで尋ねない。
+    pub fn skip_pending_recovery(&mut self) {
+        if !self.orphans.is_empty() {
+            self.orphans.remove(0);
+        }
     }
 
     /// 編集の操作を受け付けられるか。
@@ -1172,6 +1248,106 @@ mod tests {
             e.move_down(false);
             e.backspace();
             assert_eq!(text(e), "あい");
+        });
+    }
+
+    fn recovery_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("kakikotoba-editor-recovery-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn snapshot_files(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir).map_or(Vec::new(), |entries| entries.map(|entry| entry.unwrap().path()).collect())
+    }
+
+    #[test]
+    fn autosave_keeps_a_copy_only_while_there_are_unsaved_changes() {
+        with_editor("", |e| {
+            let dir = recovery_dir("autosave");
+            e.enable_recovery(&dir);
+            assert!(e.autosave().is_none());
+            assert!(snapshot_files(&dir).is_empty(), "変更がなければ書かない");
+
+            e.insert("あ");
+            // 未確定の文字は写しに含めない
+            e.set_preedit("か", None);
+            assert!(e.autosave().is_none());
+            let files = snapshot_files(&dir);
+            assert_eq!(files.len(), 1);
+            assert!(std::fs::read_to_string(&files[0]).unwrap().ends_with("\n\nあ"));
+            e.set_preedit("", None);
+
+            // 保存時点まで戻したら消す
+            e.undo();
+            assert!(e.autosave().is_none());
+            assert!(snapshot_files(&dir).is_empty());
+
+            e.insert("い");
+            e.autosave();
+            let path = dir.join("本文.txt");
+            e.save_as(path.clone()).unwrap();
+            assert_eq!(snapshot_files(&dir), std::slice::from_ref(&path), "保存したら写しを消す");
+
+            e.insert("う");
+            e.autosave();
+            e.stop_recovery();
+            e.autosave();
+            assert_eq!(snapshot_files(&dir), [path], "終了した後は書かない");
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn autosave_failure_is_reported_once_while_it_keeps_failing() {
+        with_editor("", |e| {
+            let dir = recovery_dir("failure");
+            std::fs::create_dir_all(&dir).unwrap();
+            let blocker = dir.join("ファイル");
+            std::fs::write(&blocker, "").unwrap();
+            // ファイルの下にはディレクトリを作れない
+            e.enable_recovery(&blocker.join("recovery"));
+            e.insert("あ");
+            assert!(e.autosave().is_some());
+            e.insert("い");
+            assert!(e.autosave().is_none(), "続けて失敗している間は通知しない");
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn orphaned_copy_is_restored_as_an_unsaved_document_at_its_path() {
+        with_editor("", |e| {
+            let dir = recovery_dir("restore");
+            std::fs::create_dir_all(&dir).unwrap();
+            let original = dir.join("本文.md");
+            // pid 0 の起動はないので、異常終了した起動の写しとして扱われる
+            let orphan = |name: &str, saved: u64, path: &str, text: &str| {
+                let file = dir.join(name);
+                std::fs::write(&file, format!("kakikotoba-recovery 1\npid 0\nsaved {saved}\npath {path}\n\n{text}")).unwrap();
+                file
+            };
+            let older = orphan("1-0.kakikotoba", 1000, "", "新規の文書");
+            let newer = orphan("2-0.kakikotoba", 2000, original.to_str().unwrap(), "# 見出し");
+            e.enable_recovery(&dir);
+
+            assert_eq!(e.pending_recovery().unwrap().file, newer);
+            e.restore_recovery().unwrap();
+            assert_eq!(text(e), "# 見出し");
+            assert!(e.is_modified());
+            assert_eq!(e.document_name(), "本文.md");
+            assert!(!newer.exists());
+
+            // 「後で」は写しを残す
+            assert_eq!(e.pending_recovery().unwrap().file, older);
+            e.skip_pending_recovery();
+            assert!(e.pending_recovery().is_none());
+            assert!(older.exists());
+
+            e.enable_recovery(&dir);
+            e.discard_pending_recovery().unwrap();
+            assert!(!older.exists());
+            std::fs::remove_dir_all(&dir).unwrap();
         });
     }
 }
