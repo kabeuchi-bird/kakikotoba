@@ -69,10 +69,11 @@ impl Session {
 
     /// 写しを消す。もともとなければ何もしない。
     pub fn remove(&mut self) -> io::Result<()> {
-        if self.written.take().is_some() {
+        if self.written.is_some() {
             match fs::remove_file(&self.file) {
+                // 消せなければ、次の呼び出しでまた消しにいく
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                _ => {}
+                _ => self.written = None,
             }
         }
         Ok(())

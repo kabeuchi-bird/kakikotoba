@@ -750,6 +750,12 @@ impl Editor {
         }
         let snapshot = self.orphans.remove(0);
         self.replace_document(Buffer::recovered(&snapshot.text), snapshot.path.clone());
+        // 古い写しは、この起動の写しを書けてから消す。次の自動保存までに落ちても本文を失わないように
+        if let Some(session) = &mut self.recovery {
+            let written = session.write(self.path.as_deref(), self.buffer.rope(), self.buffer.revision());
+            self.autosave_failed = written.is_err();
+            written?;
+        }
         snapshot.remove()
     }
 
@@ -1337,6 +1343,9 @@ mod tests {
             assert!(e.is_modified());
             assert_eq!(e.document_name(), "本文.md");
             assert!(!newer.exists());
+            let own = snapshot_files(&dir).into_iter().filter(|file| file != &older).collect::<Vec<_>>();
+            assert_eq!(own.len(), 1, "古い写しを消す前に、この起動の写しを書く");
+            assert!(std::fs::read_to_string(&own[0]).unwrap().ends_with("\n\n# 見出し"));
 
             // 「後で」は写しを残す
             assert_eq!(e.pending_recovery().unwrap().file, older);
