@@ -175,6 +175,43 @@ pub mod qobject {
         #[qinvokable]
         fn open(self: Pin<&mut VerticalEditor>, url: &QUrl) -> QString;
 
+        /// 自動保存。通知すべき失敗があればエラーメッセージ、なければ空文字列を返す
+        #[qinvokable]
+        fn autosave(self: Pin<&mut VerticalEditor>) -> QString;
+        /// 終了時に呼ぶ。自動保存の写しを消し、以後は書き出さない
+        #[qinvokable]
+        #[cxx_name = "stopRecovery"]
+        fn stop_recovery(self: Pin<&mut VerticalEditor>);
+        /// 異常終了した起動の写しのうち、次に尋ねるもの
+        #[qinvokable]
+        #[cxx_name = "hasPendingRecovery"]
+        fn has_pending_recovery(self: &VerticalEditor) -> bool;
+        /// 元のパス。新規文書なら空文字列
+        #[qinvokable]
+        #[cxx_name = "pendingRecoveryPath"]
+        fn pending_recovery_path(self: &VerticalEditor) -> QString;
+        /// 書き出した時刻（UNIX時刻のミリ秒）
+        #[qinvokable]
+        #[cxx_name = "pendingRecoveryTime"]
+        fn pending_recovery_time(self: &VerticalEditor) -> f64;
+        /// 元のファイルが写しより後に更新されているか
+        #[qinvokable]
+        #[cxx_name = "pendingRecoveryOriginalIsNewer"]
+        fn pending_recovery_original_is_newer(self: &VerticalEditor) -> bool;
+        // 以下の2つは失敗時にエラーメッセージ、成功時に空文字列を返す
+        /// 写しを、元のパスに結び付けた未保存の文書として開く
+        #[qinvokable]
+        #[cxx_name = "restoreRecovery"]
+        fn restore_recovery(self: Pin<&mut VerticalEditor>) -> QString;
+        /// 次に尋ねる写しを消す
+        #[qinvokable]
+        #[cxx_name = "discardPendingRecovery"]
+        fn discard_pending_recovery(self: Pin<&mut VerticalEditor>) -> QString;
+        /// 写しを残したまま、次の起動まで尋ねない
+        #[qinvokable]
+        #[cxx_name = "skipPendingRecovery"]
+        fn skip_pending_recovery(self: Pin<&mut VerticalEditor>);
+
         #[qinvokable]
         #[cxx_name = "setHighlightOptions"]
         fn set_highlight_options(self: Pin<&mut VerticalEditor>, enabled: bool, symbol_forms: bool);
@@ -655,6 +692,49 @@ impl qobject::VerticalEditor {
             .and_then(|path| self.as_mut().editor_mut().open(path).map_err(|e| e.to_string()))
             .map_err(|e| format!("開けません: {e}"));
         self.finish_file_operation(result)
+    }
+
+    fn autosave(mut self: Pin<&mut Self>) -> QString {
+        let error = self.as_mut().editor_mut().autosave();
+        QString::from(error.map_or(String::new(), |e| format!("自動保存できません: {e}")).as_str())
+    }
+
+    fn stop_recovery(mut self: Pin<&mut Self>) {
+        self.as_mut().editor_mut().stop_recovery();
+    }
+
+    fn has_pending_recovery(&self) -> bool {
+        self.rust().editor.0.pending_recovery().is_some()
+    }
+
+    fn pending_recovery_path(&self) -> QString {
+        let path = self.rust().editor.0.pending_recovery().and_then(|snapshot| snapshot.path.as_deref());
+        QString::from(path.map_or(String::new(), |path| path.to_string_lossy().into_owned()).as_str())
+    }
+
+    fn pending_recovery_time(&self) -> f64 {
+        let saved = self.rust().editor.0.pending_recovery().map(|snapshot| snapshot.saved);
+        let since_epoch = saved.and_then(|saved| saved.duration_since(std::time::UNIX_EPOCH).ok());
+        since_epoch.map_or(0.0, |duration| duration.as_millis() as f64)
+    }
+
+    fn pending_recovery_original_is_newer(&self) -> bool {
+        self.rust().editor.0.pending_recovery().is_some_and(|snapshot| snapshot.original_is_newer())
+    }
+
+    fn restore_recovery(mut self: Pin<&mut Self>) -> QString {
+        self.reset_ime();
+        let result = self.as_mut().editor_mut().restore_recovery();
+        self.finish_file_operation(result.map_err(|e| format!("復元した文書の写しを書き出せません（元の写しは残しています）: {e}")))
+    }
+
+    fn discard_pending_recovery(mut self: Pin<&mut Self>) -> QString {
+        let result = self.as_mut().editor_mut().discard_pending_recovery();
+        self.finish_file_operation(result.map_err(|e| format!("写しを消せません: {e}")))
+    }
+
+    fn skip_pending_recovery(mut self: Pin<&mut Self>) {
+        self.as_mut().editor_mut().skip_pending_recovery();
     }
 
     unsafe fn paint(mut self: Pin<&mut Self>, painter: *mut qobject::QPainter) {

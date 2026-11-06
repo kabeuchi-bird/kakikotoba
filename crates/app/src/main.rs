@@ -30,7 +30,12 @@ fn startup() -> Result<Editor, String> {
         Some(path) => open_buffer(path).map_err(|e| format!("{}: {e}", path.display()))?,
         None => Buffer::new(""),
     };
-    Ok(Editor::new(buffer, path, Fonts::load_defaults()?))
+    let mut editor = Editor::new(buffer, path, Fonts::load_defaults()?);
+    // 置き場所が決まらない環境（HOMEがない）では自動保存しない
+    if let Some(dir) = kakikotoba_core::recovery::default_dir() {
+        editor.enable_recovery(&dir);
+    }
+    Ok(editor)
 }
 
 fn main() -> ExitCode {
