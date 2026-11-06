@@ -868,7 +868,7 @@ impl qobject::VerticalEditor {
             KEY_DELETE => { editor.delete(); true }
             KEY_RETURN | KEY_ENTER => { editor.insert("\n"); true }
             _ if modifiers & (CONTROL | ALT) == 0 && text.chars().all(|c| !c.is_control()) && !text.is_empty() => {
-                editor.type_text(text);
+                editor.insert(text);
                 true
             }
             _ => false,
