@@ -111,6 +111,7 @@ impl Buffer {
         self.saved_depth != Some(self.undo.len())
     }
 
+    /// 本文の版。編集、Undo、Redoのたびに増える。自動保存で変化を見分けるのに使う。
     pub fn revision(&self) -> u64 {
         self.revision
     }

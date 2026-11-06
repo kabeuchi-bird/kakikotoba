@@ -43,6 +43,7 @@ pub struct Session {
 }
 
 impl Session {
+    /// `dir` に置く、この起動の写し。作った時点では何も書き出さない。
     pub fn new(dir: &Path) -> Self {
         let started = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
         let name = format!("{started}-{}.{EXTENSION}", std::process::id());
@@ -93,6 +94,7 @@ impl Session {
     }
 }
 
+/// 形式に従って一時ファイルへ書き、内容をディスクまで確定させる。
 fn write_snapshot(tmp: &Path, path: Option<&Path>, text: &Rope) -> io::Result<()> {
     let file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(tmp)?;
     let mut writer = BufWriter::new(file);
@@ -105,6 +107,7 @@ fn write_snapshot(tmp: &Path, path: Option<&Path>, text: &Rope) -> io::Result<()
     writer.into_inner().map_err(|e| e.into_error())?.sync_all()
 }
 
+/// 元のパスを1行に収めるため、`\` と改行をエスケープする。
 fn escape(bytes: &[u8]) -> Vec<u8> {
     let mut escaped = Vec::with_capacity(bytes.len());
     for &b in bytes {
@@ -117,6 +120,7 @@ fn escape(bytes: &[u8]) -> Vec<u8> {
     escaped
 }
 
+/// `escape` の逆。不正なエスケープがあれば `None`。
 fn unescape(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut plain = Vec::with_capacity(bytes.len());
     let mut iter = bytes.iter();
@@ -145,6 +149,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// 写しのファイルの中身を読む。形式に合わなければ `None`。
     fn parse(file: PathBuf, data: &[u8]) -> Option<Self> {
         let mut rest = data.strip_prefix(MAGIC)?.strip_prefix(b"\n")?;
         let mut field = |name: &[u8]| {
@@ -168,6 +173,7 @@ impl Snapshot {
         modified.is_some_and(|modified| modified > self.saved)
     }
 
+    /// 写しのファイルを消す。もともとなければ何もしない。
     pub fn remove(&self) -> io::Result<()> {
         match fs::remove_file(&self.file) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),

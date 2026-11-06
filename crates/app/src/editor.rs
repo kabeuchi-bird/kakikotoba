@@ -777,6 +777,7 @@ impl Editor {
         Ok(())
     }
 
+    /// 次に尋ねる写しを消す。
     pub fn discard_pending_recovery(&mut self) -> io::Result<()> {
         if self.orphans.is_empty() {
             return Ok(());

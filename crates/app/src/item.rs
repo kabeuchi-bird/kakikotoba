@@ -194,16 +194,20 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "pendingRecoveryTime"]
         fn pending_recovery_time(self: &VerticalEditor) -> f64;
+        /// 元のファイルが写しより後に更新されているか
         #[qinvokable]
         #[cxx_name = "pendingRecoveryOriginalIsNewer"]
         fn pending_recovery_original_is_newer(self: &VerticalEditor) -> bool;
         // 以下の2つは失敗時にエラーメッセージ、成功時に空文字列を返す
+        /// 写しを、元のパスに結び付けた未保存の文書として開く
         #[qinvokable]
         #[cxx_name = "restoreRecovery"]
         fn restore_recovery(self: Pin<&mut VerticalEditor>) -> QString;
+        /// 次に尋ねる写しを消す
         #[qinvokable]
         #[cxx_name = "discardPendingRecovery"]
         fn discard_pending_recovery(self: Pin<&mut VerticalEditor>) -> QString;
+        /// 写しを残したまま、次の起動まで尋ねない
         #[qinvokable]
         #[cxx_name = "skipPendingRecovery"]
         fn skip_pending_recovery(self: Pin<&mut VerticalEditor>);
