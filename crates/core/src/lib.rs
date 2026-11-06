@@ -31,7 +31,9 @@ pub struct Buffer {
 
 /// Undoで語ごとにまとめる字。英数字（ラテン、ギリシャ、キリル）と `'` `-`。全角文字は含めない。
 fn is_word_char(c: char) -> bool {
-    matches!(c, '\'' | '-') || (c.is_alphanumeric() && matches!(c as u32, 0..=0x24f | 0x370..=0x4ff))
+    // ラテン（基本〜拡張B、拡張追加）、ギリシャ（拡張を含む）、キリル（補助を含む）
+    matches!(c, '\'' | '-')
+        || (c.is_alphanumeric() && matches!(c as u32, 0..=0x24f | 0x370..=0x52f | 0x1e00..=0x1fff))
 }
 
 impl Buffer {
@@ -160,11 +162,12 @@ impl Buffer {
 
     /// `range` を `text` に置き換え、置換後のカーソル位置を返す。
     pub fn replace(&mut self, range: Range<usize>, text: &str) -> usize {
-        self.typing = false;
         let at = range.start;
+        // 何も変えない操作（空の確定、文頭でのBackspaceなど）では、打ちかけの語を区切らない
         if range.is_empty() && text.is_empty() {
             return at;
         }
+        self.typing = false;
         // 保存時点より前に戻ってから編集すると、保存時点へは戻れなくなる
         if self.saved_depth.is_some_and(|depth| depth > self.undo.len()) {
             self.saved_depth = None;
@@ -278,6 +281,10 @@ mod tests {
         let mut b = Buffer::new("");
         let cursor = type_chars(&mut b, 0, "don't re-read 2026  x");
         assert_eq!(cursor, 21);
+        // 拡張領域のラテン、ギリシャ、キリルも語の字
+        let mut v = Buffer::new("");
+        type_chars(&mut v, 0, "tệ ἄλφα ԁ");
+        assert_eq!(undo_steps(&mut v), ["tệ ἄλφα ", "tệ ", ""]);
         // 2つ目の空白は語の後ではないので、それだけで1段
         assert_eq!(undo_steps(&mut b), ["don't re-read 2026  ", "don't re-read 2026 ", "don't re-read ", "don't ", ""]);
         // Redoも同じ段で進む
@@ -305,9 +312,13 @@ mod tests {
         let at = type_chars(&mut b, 0, "ab");
         b.end_typing();
         type_chars(&mut b, at, "cd");
+        // 何も変えない操作では区切らない
+        b.replace(at + 2..at + 2, "");
+        b.type_text(at + 2, "");
+        type_chars(&mut b, at + 2, "e");
         // 離れた位置に打てば、区切りを呼ばなくても別の段
         type_chars(&mut b, 0, "x");
-        assert_eq!(undo_steps(&mut b), ["abcd", "ab", ""]);
+        assert_eq!(undo_steps(&mut b), ["abcde", "ab", ""]);
 
         let dir = std::env::temp_dir().join(format!("kakikotoba-typing-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();

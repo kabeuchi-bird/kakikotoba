@@ -1465,6 +1465,24 @@ mod tests {
             e.type_text("c");
             e.undo();
             assert_eq!(text(e), "hello ab");
+
+            // Undo・Redoの後に打った字は、戻した段や進めた段に足さない
+            e.redo();
+            assert_eq!(text(e), "hello abc");
+            e.type_text("d");
+            e.undo();
+            assert_eq!(text(e), "hello abc");
+            e.undo();
+            e.type_text("d");
+            e.undo();
+            assert_eq!(text(e), "hello ab");
+
+            // 空の確定は語を区切らない
+            e.type_text("x");
+            e.commit(0, 0, "");
+            e.type_text("y");
+            e.undo();
+            assert_eq!(text(e), "hello ab");
         });
     }
 }
