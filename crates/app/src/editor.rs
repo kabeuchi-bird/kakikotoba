@@ -383,6 +383,8 @@ impl Editor {
     }
 
     fn set_cursor(&mut self, index: usize, extend: bool) {
+        // カーソルを動かしたら、打ちかけの語はそこで区切る
+        self.buffer.end_typing();
         if extend {
             self.anchor.get_or_insert(self.cursor);
         } else {
@@ -429,10 +431,21 @@ impl Editor {
         self.keep_caret_visible();
     }
 
+    /// 貼り付けなど、まとめて入れる文字列。Undoの1段にする。
     pub fn insert(&mut self, text: &str) {
         let range = self.selection().unwrap_or(self.cursor..self.cursor);
         let cursor = self.buffer.replace(range, text);
         self.edited(cursor);
+    }
+
+    /// キーで打った字。選択がなければ、英数字は語ごとにUndoの1段にまとめる。
+    pub fn type_text(&mut self, text: &str) {
+        if self.selection().is_some() {
+            self.insert(text);
+        } else {
+            let cursor = self.buffer.type_text(self.cursor, text);
+            self.edited(cursor);
+        }
     }
 
     pub fn backspace(&mut self) {
@@ -519,7 +532,12 @@ impl Editor {
             let from = rope.char_to_utf16_cu(self.cursor).saturating_add_signed(start).min(end_of_text);
             rope.utf16_cu_to_char(from)..rope.utf16_cu_to_char((from + length).min(end_of_text))
         };
-        let cursor = self.buffer.replace(range, text);
+        // IMEの直接入力モードの英字も、確定として1字ずつ届く
+        let cursor = if range.is_empty() && range.start == self.cursor {
+            self.buffer.type_text(range.start, text)
+        } else {
+            self.buffer.replace(range, text)
+        };
         self.edited(cursor);
     }
 
@@ -1422,6 +1440,31 @@ mod tests {
             assert!(!second.exists(), "保存したら、元の写しは要らない");
             std::fs::remove_dir_all(&own).unwrap();
             std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn typed_and_committed_latin_undoes_by_word_and_japanese_by_commit() {
+        with_editor("", |e| {
+            // キー入力と、IMEの直接入力モードからの1字ずつの確定
+            "hello ".chars().for_each(|c| e.type_text(&c.to_string()));
+            "world".chars().for_each(|c| e.commit(0, 0, &c.to_string()));
+            e.commit(0, 0, "吾輩は");
+            e.commit(0, 0, "猫である");
+            e.undo();
+            assert_eq!(text(e), "hello world吾輩は");
+            e.undo();
+            assert_eq!(text(e), "hello world");
+            e.undo();
+            assert_eq!(text(e), "hello ");
+
+            // カーソルを動かしたら、同じ位置に戻っても別の段
+            "ab".chars().for_each(|c| e.type_text(&c.to_string()));
+            e.move_up(false);
+            e.move_down(false);
+            e.type_text("c");
+            e.undo();
+            assert_eq!(text(e), "hello ab");
         });
     }
 }

@@ -25,6 +25,13 @@ pub struct Buffer {
     saved_depth: Option<usize>,
     /// 本文が変わるたびに増える。自動保存で変化を見分ける
     revision: u64,
+    /// 最後のUndoの段が、打ちかけの語で、まだ字を足せるか
+    typing: bool,
+}
+
+/// Undoで語ごとにまとめる字。英数字（ラテン、ギリシャ、キリル）と `'` `-`。全角文字は含めない。
+fn is_word_char(c: char) -> bool {
+    matches!(c, '\'' | '-') || (c.is_alphanumeric() && matches!(c as u32, 0..=0x24f | 0x370..=0x4ff))
 }
 
 impl Buffer {
@@ -49,6 +56,7 @@ impl Buffer {
             redo: Vec::new(),
             saved_depth: Some(0),
             revision: 0,
+            typing: false,
         }
     }
 
@@ -73,6 +81,7 @@ impl Buffer {
         }
         result?;
         self.saved_depth = Some(self.undo.len());
+        self.typing = false;
         Ok(())
     }
 
@@ -116,8 +125,42 @@ impl Buffer {
         self.revision
     }
 
+    /// 打った字を `at` に入れ、入れた後のカーソル位置を返す。
+    /// 語の字が続けて届いたら、Undoの1段にまとめる。直後の半角空白1つまで含めて区切る。
+    /// 1字でないもの（IMEで確定した文字列など）や語の字でないものは、`replace` と同じく1段にする。
+    pub fn type_text(&mut self, at: usize, text: &str) -> usize {
+        let mut chars = text.chars();
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            return self.replace(at..at, text);
+        };
+        if !is_word_char(c) && c != ' ' {
+            return self.replace(at..at, text);
+        }
+        let joins = self.typing
+            && self.redo.is_empty()
+            // 保存した時点の段を書き換えると、未保存かどうかの判定が狂う
+            && self.saved_depth != Some(self.undo.len())
+            && self.undo.last().is_some_and(|edit| edit.removed.is_empty() && edit.at + edit.inserted.chars().count() == at);
+        let cursor = if joins {
+            let cursor = self.apply("", text, at);
+            self.undo.last_mut().expect("joins で確かめた").inserted.push(c);
+            cursor
+        } else {
+            self.replace(at..at, text)
+        };
+        // 空白で語を閉じる
+        self.typing = is_word_char(c);
+        cursor
+    }
+
+    /// 打ちかけの語を区切る。カーソルを動かしたときに呼ぶ。
+    pub fn end_typing(&mut self) {
+        self.typing = false;
+    }
+
     /// `range` を `text` に置き換え、置換後のカーソル位置を返す。
     pub fn replace(&mut self, range: Range<usize>, text: &str) -> usize {
+        self.typing = false;
         let at = range.start;
         if range.is_empty() && text.is_empty() {
             return at;
@@ -139,6 +182,7 @@ impl Buffer {
 
     /// Undoできれば、Undo後のカーソル位置を返す。
     pub fn undo(&mut self) -> Option<usize> {
+        self.typing = false;
         let edit = self.undo.pop()?;
         let cursor = self.apply(&edit.inserted, &edit.removed, edit.at);
         self.redo.push(edit);
@@ -147,6 +191,7 @@ impl Buffer {
 
     /// Redoできれば、Redo後のカーソル位置を返す。
     pub fn redo(&mut self) -> Option<usize> {
+        self.typing = false;
         let edit = self.redo.pop()?;
         let cursor = self.apply(&edit.removed, &edit.inserted, edit.at);
         self.undo.push(edit);
@@ -215,6 +260,65 @@ mod tests {
         assert!(b.is_modified());
 
         assert_eq!(Buffer::load(&path).unwrap().rope().to_string(), "あ");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 字を1つずつ打つ。
+    fn type_chars(b: &mut Buffer, at: usize, text: &str) -> usize {
+        text.chars().fold(at, |at, c| b.type_text(at, &c.to_string()))
+    }
+
+    /// Undoを1段ずつ戻し、各段の後の本文を返す。
+    fn undo_steps(b: &mut Buffer) -> Vec<String> {
+        std::iter::from_fn(|| b.undo().map(|_| b.rope().to_string())).collect()
+    }
+
+    #[test]
+    fn typed_words_undo_one_word_at_a_time_with_their_trailing_space() {
+        let mut b = Buffer::new("");
+        let cursor = type_chars(&mut b, 0, "don't re-read 2026  x");
+        assert_eq!(cursor, 21);
+        // 2つ目の空白は語の後ではないので、それだけで1段
+        assert_eq!(undo_steps(&mut b), ["don't re-read 2026  ", "don't re-read 2026 ", "don't re-read ", "don't ", ""]);
+        // Redoも同じ段で進む
+        assert_eq!(b.redo(), Some(6));
+        assert_eq!(b.rope().to_string(), "don't ");
+    }
+
+    #[test]
+    fn committed_text_newlines_and_other_characters_are_steps_of_their_own() {
+        let mut b = Buffer::new("");
+        let at = type_chars(&mut b, 0, "ab");
+        // IMEで確定した文字列、全角の英字、句読点、改行
+        let at = b.type_text(at, "漢字");
+        let at = type_chars(&mut b, at, "ＡＢ、\ncd");
+        b.replace(at..at, "貼り付け");
+        assert_eq!(
+            undo_steps(&mut b),
+            ["ab漢字ＡＢ、\ncd", "ab漢字ＡＢ、\n", "ab漢字ＡＢ、", "ab漢字ＡＢ", "ab漢字Ａ", "ab漢字", "ab", ""]
+        );
+    }
+
+    #[test]
+    fn moving_the_cursor_undoing_or_saving_ends_the_word() {
+        let mut b = Buffer::new("");
+        let at = type_chars(&mut b, 0, "ab");
+        b.end_typing();
+        type_chars(&mut b, at, "cd");
+        // 離れた位置に打てば、区切りを呼ばなくても別の段
+        type_chars(&mut b, 0, "x");
+        assert_eq!(undo_steps(&mut b), ["abcd", "ab", ""]);
+
+        let dir = std::env::temp_dir().join(format!("kakikotoba-typing-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut b = Buffer::new("");
+        let at = type_chars(&mut b, 0, "ab");
+        b.save(&dir.join("本文.txt")).unwrap();
+        type_chars(&mut b, at, "c");
+        assert!(b.is_modified());
+        b.undo();
+        assert!(!b.is_modified(), "保存した時点まで戻れる");
+        assert_eq!(b.rope().to_string(), "ab");
         fs::remove_dir_all(&dir).unwrap();
     }
 
