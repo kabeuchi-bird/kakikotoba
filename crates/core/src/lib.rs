@@ -29,11 +29,31 @@ pub struct Buffer {
     typing: bool,
 }
 
-/// Undoで語ごとにまとめる字。英数字（ラテン、ギリシャ、キリル）と `'` `-`。全角文字は含めない。
+/// Undoで語ごとにまとめる字。英数字（ラテン、ギリシャ、キリル）と `'` `-`、語の中の結合文字。
+/// 全角の英数字（U+FF00〜）は含めない。
 fn is_word_char(c: char) -> bool {
-    // ラテン（基本〜拡張B、拡張追加）、ギリシャ（拡張を含む）、キリル（補助を含む）
-    matches!(c, '\'' | '-')
-        || (c.is_alphanumeric() && matches!(c as u32, 0..=0x24f | 0x370..=0x52f | 0x1e00..=0x1fff))
+    matches!(c, '\'' | '-') || (c.is_alphanumeric() || is_combining_mark(c)) && in_word_script(c)
+}
+
+/// アクセントなどを付ける結合文字（ダイアクリティカルマーク）。
+fn is_combining_mark(c: char) -> bool {
+    matches!(c as u32, 0x300..=0x36f | 0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x20d0..=0x20ff | 0xfe20..=0xfe2f)
+}
+
+/// ラテン、ギリシャ、キリルの各ブロックか（Unicodeのブロック一覧に従う）。
+fn in_word_script(c: char) -> bool {
+    matches!(c as u32,
+        // ラテン: 基本・Latin-1補助・拡張A/B、IPA、音声記号（拡張・補助を含む）
+        0x0000..=0x02af | 0x1d00..=0x1dbf
+        // ラテン: 拡張追加、拡張C/D/E、合字（ﬀ ﬁ など）、拡張F/G
+        | 0x1e00..=0x1eff | 0x2c60..=0x2c7f | 0xa720..=0xa7ff | 0xab30..=0xab6f | 0xfb00..=0xfb06
+        | 0x10780..=0x107bf | 0x1df00..=0x1dfff
+        // ギリシャ（拡張を含む）
+        | 0x0370..=0x03ff | 0x1f00..=0x1fff
+        // キリル（補助、拡張A/B/C/Dを含む）
+        | 0x0400..=0x052f | 0x1c80..=0x1c8f | 0x2de0..=0x2dff | 0xa640..=0xa69f | 0x1e030..=0x1e08f
+        // 結合文字のブロック（文字そのものは is_combining_mark で絞る）
+        | 0x0300..=0x036f | 0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x20d0..=0x20ff | 0xfe20..=0xfe2f)
 }
 
 impl Buffer {
@@ -281,10 +301,14 @@ mod tests {
         let mut b = Buffer::new("");
         let cursor = type_chars(&mut b, 0, "don't re-read 2026  x");
         assert_eq!(cursor, 21);
-        // 拡張領域のラテン、ギリシャ、キリルも語の字
+        // 拡張ブロックのラテン、ギリシャ、キリル、結合文字も語の字
         let mut v = Buffer::new("");
-        type_chars(&mut v, 0, "tệ ἄλφα ԁ");
-        assert_eq!(undo_steps(&mut v), ["tệ ἄλφα ", "tệ ", ""]);
+        type_chars(&mut v, 0, "tệ aⱥꝛﬁ ἄλφα ԁᲀꙁ e\u{301}");
+        assert_eq!(undo_steps(&mut v), ["tệ aⱥꝛﬁ ἄλφα ԁᲀꙁ ", "tệ aⱥꝛﬁ ἄλφα ", "tệ aⱥꝛﬁ ", "tệ ", ""]);
+        // 全角の英字はまとめない
+        let mut w = Buffer::new("");
+        type_chars(&mut w, 0, "ＡＢ");
+        assert_eq!(undo_steps(&mut w), ["Ａ", ""]);
         // 2つ目の空白は語の後ではないので、それだけで1段
         assert_eq!(undo_steps(&mut b), ["don't re-read 2026  ", "don't re-read 2026 ", "don't re-read ", "don't ", ""]);
         // Redoも同じ段で進む
