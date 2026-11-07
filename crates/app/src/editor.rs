@@ -789,7 +789,7 @@ impl Editor {
         }
         let mut snapshot = self.orphans.remove(0);
         // 本文はバッファに移したので、元の写しはファイルを消すためだけに持つ
-        self.replace_document(Buffer::recovered(&std::mem::take(&mut snapshot.text)), snapshot.path.clone());
+        self.replace_document(Buffer::recovered(&std::mem::take(&mut snapshot.text), snapshot.path.as_deref()), snapshot.path.clone());
         self.superseded = Some(snapshot);
         if let Some(session) = &mut self.recovery {
             let written = session.write(self.path.as_deref(), self.buffer.rope(), self.buffer.revision());

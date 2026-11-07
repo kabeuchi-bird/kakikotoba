@@ -4,7 +4,7 @@ pub mod recovery;
 pub mod script;
 
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::ops::Range;
 use std::path::Path;
 
@@ -60,8 +60,13 @@ impl Buffer {
     }
 
     /// 異常終了から復元した本文。ファイルの中身とは違うので、未保存の状態で始める。
-    pub fn recovered(text: &str) -> Self {
-        Self { saved_depth: None, ..Self::new(text) }
+    /// 写しはBOMの有無を持たないので、保存先になる元のファイルに合わせる。
+    pub fn recovered(text: &str, path: Option<&Path>) -> Self {
+        let mut head = [0; BOM.len()];
+        let bom = path.is_some_and(|path| {
+            File::open(path).and_then(|mut file| file.read_exact(&mut head)).is_ok() && head == *BOM.as_bytes()
+        });
+        Self { saved_depth: None, bom, ..Self::new(text) }
     }
 
     /// 書き込み途中で失敗しても元ファイルを壊さないよう、一時ファイル経由で置き換える。
@@ -259,6 +264,12 @@ mod tests {
         let mut b = Buffer::load(&without).unwrap();
         b.save(&without).unwrap();
         assert_eq!(fs::read_to_string(&without).unwrap(), "あ");
+
+        // 復元した文書は元のファイルに合わせる
+        for (path, expected) in [(&with_bom, "\u{feff}え"), (&without, "え")] {
+            Buffer::recovered("え", Some(path)).save(path).unwrap();
+            assert_eq!(fs::read_to_string(path).unwrap(), expected);
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -376,7 +387,7 @@ mod tests {
         b.replace(0..0, "");
         assert_eq!(b.revision(), before);
 
-        let r = Buffer::recovered("い");
+        let r = Buffer::recovered("い", None);
         assert!(r.is_modified());
         assert_eq!(r.rope().to_string(), "い");
     }
