@@ -21,9 +21,9 @@ fn hangs(c: char) -> bool {
     matches!(c, '、' | '。' | '，' | '．')
 }
 
-/// 単語の途中の分割を判定する対象の文字（ラテン、ギリシャ、キリルの英字）。
+/// 単語の途中の分割を判定する対象の文字（英字）。
 fn is_word_letter(c: char) -> bool {
-    c.is_alphabetic() && c < '\u{530}'
+    kakikotoba_core::script::is_letter(c)
 }
 
 /// 2つのクラスタの間で分けると、単語の途中になるか。
@@ -191,6 +191,10 @@ mod tests {
     fn only_letters_of_western_scripts_split_words() {
         assert!(splits_word('a', 'b'));
         assert!(splits_word('Ω', 'д'));
+        // 拡張ブロックの英字も、Undoの単位と同じ判定で分ける
+        assert!(splits_word('ⱥ', 'ệ'));
+        assert!(splits_word('ἄ', 'ᲀ'));
+        assert!(!splits_word('Ａ', 'Ｂ'));
         assert!(!splits_word('a', '1'));
         assert!(!splits_word('a', ' '));
         assert!(!splits_word('あ', 'い'));

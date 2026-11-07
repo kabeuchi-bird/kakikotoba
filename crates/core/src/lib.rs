@@ -1,6 +1,7 @@
 //! バッファ、Undo/Redo（操作ログ方式）
 
 pub mod recovery;
+pub mod script;
 
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
@@ -29,29 +30,9 @@ pub struct Buffer {
     typing: Option<usize>,
 }
 
-/// Undoで語ごとにまとめる字。英数字（ラテン、ギリシャ、キリル）と `'` `-`、語の中の結合文字。
-/// 全角の英数字（U+FF00〜）は含めない。
+/// Undoで語ごとにまとめる字。英字、数字、`'` `-`。全角の英数字は含めない。
 fn is_word_char(c: char) -> bool {
-    matches!(c, '\'' | '-') || is_combining_mark(c) || c.is_alphanumeric() && in_word_script(c)
-}
-
-/// アクセントなどを付ける結合文字（ダイアクリティカルマーク）。
-fn is_combining_mark(c: char) -> bool {
-    matches!(c as u32, 0x300..=0x36f | 0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x20d0..=0x20ff | 0xfe20..=0xfe2f)
-}
-
-/// ラテン、ギリシャ、キリルの各ブロックか（Unicodeのブロック一覧に従う）。
-fn in_word_script(c: char) -> bool {
-    matches!(c as u32,
-        // ラテン: 基本・Latin-1補助・拡張A/B、IPA、音声記号（拡張・補助を含む）
-        0x0000..=0x02af | 0x1d00..=0x1dbf
-        // ラテン: 拡張追加、拡張C/D/E、合字（ﬀ ﬁ など）、拡張F/G
-        | 0x1e00..=0x1eff | 0x2c60..=0x2c7f | 0xa720..=0xa7ff | 0xab30..=0xab6f | 0xfb00..=0xfb06
-        | 0x10780..=0x107bf | 0x1df00..=0x1dfff
-        // ギリシャ（拡張を含む）
-        | 0x0370..=0x03ff | 0x1f00..=0x1fff
-        // キリル（補助、拡張A/B/C/Dを含む）
-        | 0x0400..=0x052f | 0x1c80..=0x1c8f | 0x2de0..=0x2dff | 0xa640..=0xa69f | 0x1e030..=0x1e08f)
+    script::is_letter(c) || matches!(c, '0'..='9' | '\'' | '-')
 }
 
 impl Buffer {
