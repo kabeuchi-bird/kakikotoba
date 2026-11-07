@@ -34,19 +34,27 @@ Linux 専用です。CachyOS の KDE Plasma 6（Wayland）と fcitx5 で動作�
 - fontconfig（`fc-match` でフォントを探します）
 - 日本語フォント（Noto CJK、源ノ、IPA のいずれかを優先します）
 
-Arch Linux 系でのインストール例:
+## インストール
+
+### Arch Linux 系
+
+AUR の [`kakikotoba-git`](https://aur.archlinux.org/packages/kakikotoba-git) からインストールできます。必要なものも一緒に入ります。
 
 ```sh
-sudo pacman -S --needed rust qt6-base qt6-declarative kirigami fontconfig noto-fonts-cjk
+yay -S kakikotoba-git    # paru などほかの AUR ヘルパーでも同じです
 ```
 
-## インストール（Arch Linux 系）
+AUR ヘルパーを使わない場合:
 
 ```sh
-git clone https://github.com/kabeuchi-bird/kakikotoba.git
-cd kakikotoba/aur/kakikotoba-git
+git clone https://aur.archlinux.org/kakikotoba-git.git
+cd kakikotoba-git
 makepkg -si
 ```
+
+### その他のディストリビューション
+
+パッケージはありません。「動作環境」に挙げたものをディストリビューションのパッケージで入れてから、下の「ビルドと起動」の手順でソースからビルドしてください。Qt 6 は開発用のパッケージ（Debian / Ubuntu では `qt6-base-dev` `qt6-declarative-dev` `qmake6`、Fedora では `qt6-qtbase-devel` `qt6-qtdeclarative-devel`）が必要です。Fedora ではリンカの `lld` も入れてください。
 
 ## ビルドと起動
 
