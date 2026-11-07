@@ -4,7 +4,7 @@ pub mod recovery;
 pub mod script;
 
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::ops::Range;
 use std::path::Path;
 
@@ -28,7 +28,11 @@ pub struct Buffer {
     revision: u64,
     /// 打ちかけの語の終わりの位置。最後のUndoの段がその語で、この位置に打てば同じ段に足す
     typing: Option<usize>,
+    /// 開いたファイルの先頭にBOMがあったか。本文には入れず、保存のときに付け直す
+    bom: bool,
 }
+
+const BOM: &str = "\u{feff}";
 
 /// Undoで語ごとにまとめる字。英字、数字、`'` `-`。全角の英数字は含めない。
 fn is_word_char(c: char) -> bool {
@@ -37,28 +41,32 @@ fn is_word_char(c: char) -> bool {
 
 impl Buffer {
     pub fn new(text: &str) -> Self {
-        Self::from_rope(Rope::from_str(text))
-    }
-
-    /// UTF-8以外のファイルは `InvalidData` エラーになる。
-    pub fn load(path: &Path) -> io::Result<Self> {
-        Ok(Self::from_rope(Rope::from_reader(BufReader::new(File::open(path)?))?))
-    }
-
-    /// 異常終了から復元した本文。ファイルの中身とは違うので、未保存の状態で始める。
-    pub fn recovered(text: &str) -> Self {
-        Self { saved_depth: None, ..Self::new(text) }
-    }
-
-    fn from_rope(rope: Rope) -> Self {
         Self {
-            rope,
+            rope: Rope::from_str(text),
             undo: Vec::new(),
             redo: Vec::new(),
             saved_depth: Some(0),
             revision: 0,
             typing: None,
+            bom: false,
         }
+    }
+
+    /// UTF-8以外のファイルは `InvalidData` エラーになる。先頭のBOMは本文に入れない。
+    pub fn load(path: &Path) -> io::Result<Self> {
+        let text = fs::read_to_string(path)?;
+        let body = text.strip_prefix(BOM);
+        Ok(Self { bom: body.is_some(), ..Self::new(body.unwrap_or(&text)) })
+    }
+
+    /// 異常終了から復元した本文。ファイルの中身とは違うので、未保存の状態で始める。
+    /// 写しはBOMの有無を持たないので、保存先になる元のファイルに合わせる。
+    pub fn recovered(text: &str, path: Option<&Path>) -> Self {
+        let mut head = [0; BOM.len()];
+        let bom = path.is_some_and(|path| {
+            File::open(path).and_then(|mut file| file.read_exact(&mut head)).is_ok() && head == *BOM.as_bytes()
+        });
+        Self { saved_depth: None, bom, ..Self::new(text) }
     }
 
     /// 書き込み途中で失敗しても元ファイルを壊さないよう、一時ファイル経由で置き換える。
@@ -88,6 +96,9 @@ impl Buffer {
 
     fn write_replacing(&self, tmp: &Path, target: &Path) -> io::Result<()> {
         let mut writer = BufWriter::new(File::create(tmp)?);
+        if self.bom {
+            writer.write_all(BOM.as_bytes())?;
+        }
         self.rope.write_to(&mut writer)?;
         writer.flush()?;
         let file = writer.into_inner().map_err(|e| e.into_error())?;
@@ -235,6 +246,34 @@ mod tests {
     }
 
     #[test]
+    fn bom_stays_out_of_the_text_and_is_kept_on_save() {
+        let dir = std::env::temp_dir().join(format!("kakikotoba-bom-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (with_bom, without) = (dir.join("bom.txt"), dir.join("plain.txt"));
+        fs::write(&with_bom, "\u{feff}あ\u{feff}い").unwrap();
+        fs::write(&without, "あ").unwrap();
+
+        let mut b = Buffer::load(&with_bom).unwrap();
+        // 先頭のBOMだけを外す。途中のU+FEFFは本文
+        assert_eq!(b.rope().to_string(), "あ\u{feff}い");
+        assert!(!b.is_modified());
+        b.replace(0..0, "う");
+        b.save(&with_bom).unwrap();
+        assert_eq!(fs::read_to_string(&with_bom).unwrap(), "\u{feff}うあ\u{feff}い");
+
+        let mut b = Buffer::load(&without).unwrap();
+        b.save(&without).unwrap();
+        assert_eq!(fs::read_to_string(&without).unwrap(), "あ");
+
+        // 復元した文書は元のファイルに合わせる
+        for (path, expected) in [(&with_bom, "\u{feff}え"), (&without, "え")] {
+            Buffer::recovered("え", Some(path)).save(path).unwrap();
+            assert_eq!(fs::read_to_string(path).unwrap(), expected);
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn modified_tracks_saved_state() {
         let dir = std::env::temp_dir().join(format!("kakikotoba-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -348,7 +387,7 @@ mod tests {
         b.replace(0..0, "");
         assert_eq!(b.revision(), before);
 
-        let r = Buffer::recovered("い");
+        let r = Buffer::recovered("い", None);
         assert!(r.is_modified());
         assert_eq!(r.rope().to_string(), "い");
     }

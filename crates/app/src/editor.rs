@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use kakikotoba_core::Buffer;
 use kakikotoba_core::recovery::{self, Session, Snapshot};
 use kakikotoba_layout::page::{PageFormat, PageSettings, SpreadMode};
-use kakikotoba_layout::{Layout, Rect, Run, Settings};
+use kakikotoba_layout::{Cache, Layout, Rect, Run, Settings};
 use kakikotoba_markup::highlight::{Dialect, Highlighter, Options};
 
 use crate::fonts::{FontSlot, Fonts};
@@ -81,6 +81,7 @@ pub struct Editor {
     path: Option<PathBuf>,
     pub fonts: Fonts,
     layout: Layout,
+    layout_cache: Cache,
     settings: Settings,
     highlighter: Highlighter,
     highlight_enabled: bool,
@@ -126,6 +127,7 @@ impl Editor {
             path,
             fonts,
             layout,
+            layout_cache: Cache::default(),
             settings,
             highlighter: Highlighter::new(Options { dialect, symbol_forms: true }),
             highlight_enabled: true,
@@ -179,7 +181,7 @@ impl Editor {
             // 色0は既定の文字色
             runs.extend(self.highlighter.spans().map(|span| Run { range: span.range, color: span.kind as u8 + 1 }));
         }
-        self.layout = Layout::new(&text, &self.fonts.edit.font, self.settings, &runs);
+        self.layout = Layout::with_cache(&text, &self.fonts.edit.font, self.settings, &runs, &mut self.layout_cache);
     }
 
     fn to_screen(&self, rect: Rect) -> Rect {
@@ -681,6 +683,7 @@ impl Editor {
         if changed {
             match slot {
                 FontSlot::Edit => {
+                    self.layout_cache = Cache::default();
                     self.relayout();
                     self.keep_caret_visible();
                 }
@@ -786,7 +789,7 @@ impl Editor {
         }
         let mut snapshot = self.orphans.remove(0);
         // 本文はバッファに移したので、元の写しはファイルを消すためだけに持つ
-        self.replace_document(Buffer::recovered(&std::mem::take(&mut snapshot.text)), snapshot.path.clone());
+        self.replace_document(Buffer::recovered(&std::mem::take(&mut snapshot.text), snapshot.path.as_deref()), snapshot.path.clone());
         self.superseded = Some(snapshot);
         if let Some(session) = &mut self.recovery {
             let written = session.write(self.path.as_deref(), self.buffer.rope(), self.buffer.revision());

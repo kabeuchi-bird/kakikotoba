@@ -7,6 +7,7 @@ mod kinsoku;
 pub mod page;
 mod segment;
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use rustybuzz::ttf_parser::Tag;
@@ -316,6 +317,7 @@ pub struct Run {
 }
 
 /// カーソルが止まれる位置。各段落の末尾には送り量0の要素（改行または文書末）を置く。
+#[derive(Clone, Copy)]
 struct Stop {
     char_index: usize,
     column: usize,
@@ -331,23 +333,64 @@ pub struct Layout {
     columns: Vec<Range<usize>>,
 }
 
+/// 段落ごとの組版結果を、次の組み直しまで持つ。字送りと字数・列の送りが変わったら捨てる。
+/// フォントは見分けられないので、替えたら作り直す。
+#[derive(Default)]
+pub struct Cache {
+    settings: Option<Settings>,
+    /// 段落の文字列 → 先頭列・先頭文字を0として組んだ結果（色は付けない）
+    paragraphs: HashMap<String, Layout>,
+}
+
 impl Layout {
-    // ponytail: 編集のたびに全文を組み直す（20万字で約50ms）。入力が重ければ段落単位のキャッシュへ
     pub fn new(text: &str, font: &Font, settings: Settings, runs: &[Run]) -> Self {
-        let mut layout = Self {
-            glyphs: Vec::new(),
-            settings,
-            stops: Vec::new(),
-            columns: Vec::new(),
-        };
+        Self::with_cache(text, font, settings, runs, &mut Cache::default())
+    }
+
+    /// 前回と同じ文字列の段落は組み直さず、位置をずらして使う。
+    /// キャッシュには今回の文書にある段落だけを残す。
+    pub fn with_cache(text: &str, font: &Font, settings: Settings, runs: &[Run], cache: &mut Cache) -> Self {
+        if cache.settings != Some(settings) {
+            cache.paragraphs.clear();
+            cache.settings = Some(settings);
+        }
+        let mut old = std::mem::take(&mut cache.paragraphs);
+        let mut layout = Self::empty(settings);
         let hyphen = font.shape_rotated("-", settings.font_size);
         let mut char_index = 0;
         for line in text.split('\n') {
-            layout.push_paragraph(line.strip_suffix('\r').unwrap_or(line), char_index, font, &hyphen);
+            let paragraph = line.strip_suffix('\r').unwrap_or(line);
+            if !cache.paragraphs.contains_key(paragraph) {
+                let (key, shaped) = old.remove_entry(paragraph).unwrap_or_else(|| {
+                    let mut shaped = Self::empty(settings);
+                    shaped.push_paragraph(paragraph, font, &hyphen);
+                    (paragraph.to_owned(), shaped)
+                });
+                cache.paragraphs.insert(key, shaped);
+            }
+            layout.append(&cache.paragraphs[paragraph], char_index);
             char_index += line.chars().count() + 1;
         }
         layout.apply_runs(runs);
         layout
+    }
+
+    fn empty(settings: Settings) -> Self {
+        Self { glyphs: Vec::new(), settings, stops: Vec::new(), columns: Vec::new() }
+    }
+
+    /// 先頭列・先頭文字を0として組んだ段落を、末尾の列の後ろへ継ぎ足す。
+    fn append(&mut self, paragraph: &Layout, first_char: usize) {
+        let first_column = self.columns.len();
+        let first_stop = self.stops.len();
+        let dx = -(first_column as f32) * self.settings.column_pitch;
+        self.glyphs.extend(paragraph.glyphs.iter().map(|g| Glyph { x: g.x + dx, char_index: g.char_index + first_char, ..*g }));
+        self.stops.extend(paragraph.stops.iter().map(|s| Stop {
+            char_index: s.char_index + first_char,
+            column: s.column + first_column,
+            ..*s
+        }));
+        self.columns.extend(paragraph.columns.iter().map(|c| c.start + first_stop..c.end + first_stop));
     }
 
     /// グリフは文字順に並ぶので、ランと並行に進めて色属性を付ける。
@@ -361,7 +404,7 @@ impl Layout {
         }
     }
 
-    fn push_paragraph(&mut self, text: &str, first_char: usize, font: &Font, hyphen: &[ShapedCluster]) {
+    fn push_paragraph(&mut self, text: &str, font: &Font, hyphen: &[ShapedCluster]) {
         let Settings { font_size, chars_per_column, .. } = self.settings;
         let shaped = font.shape_oriented(text, font_size);
 
@@ -381,7 +424,7 @@ impl Layout {
             kinsoku::Wrap { hanging: true, hyphen: hyphen.first().map(|c| c.advance) },
         );
 
-        let mut char_index = first_char;
+        let mut char_index = 0;
         let mut y = 0.0;
         let mut start = 0;
         for end in ends {
@@ -765,6 +808,26 @@ mod tests {
             let settings = Settings { chars_per_column: 2, ..SETTINGS };
             let layout = Layout::new("あいうえお", font, settings, &[]);
             assert_eq!(layout.glyphs.len(), 5);
+        });
+    }
+
+    #[test]
+    fn cached_layout_matches_a_fresh_one_after_edits() {
+        with_font(|font| {
+            let mut cache = Cache::default();
+            let runs = [Run { range: 2..4, color: 1 }];
+            for text in ["あいうえおかき\nAB12\n\nあ", "あいうえおかき\nAB123\n\nあ", "\nあいうえおかき\nAB123\n\nあ", "あ\r\nあ"] {
+                let cached = Layout::with_cache(text, font, SETTINGS, &runs, &mut cache);
+                let fresh = Layout::new(text, font, SETTINGS, &runs);
+                assert_eq!(cached.glyphs, fresh.glyphs, "{text:?}");
+                assert_eq!(cached.column_count(), fresh.column_count());
+                for i in 0..=text.chars().count() {
+                    assert_eq!(cached.cursor_rect(i), fresh.cursor_rect(i), "{text:?} {i}");
+                    assert_eq!(cached.next_char(i), fresh.next_char(i));
+                }
+            }
+            // 今回の文書にない段落は残さない
+            assert_eq!(cache.paragraphs.len(), 1);
         });
     }
 
