@@ -25,14 +25,14 @@ pub struct Buffer {
     saved_depth: Option<usize>,
     /// 本文が変わるたびに増える。自動保存で変化を見分ける
     revision: u64,
-    /// 最後のUndoの段が、打ちかけの語で、まだ字を足せるか
-    typing: bool,
+    /// 打ちかけの語の終わりの位置。最後のUndoの段がその語で、この位置に打てば同じ段に足す
+    typing: Option<usize>,
 }
 
 /// Undoで語ごとにまとめる字。英数字（ラテン、ギリシャ、キリル）と `'` `-`、語の中の結合文字。
 /// 全角の英数字（U+FF00〜）は含めない。
 fn is_word_char(c: char) -> bool {
-    matches!(c, '\'' | '-') || (c.is_alphanumeric() || is_combining_mark(c)) && in_word_script(c)
+    matches!(c, '\'' | '-') || is_combining_mark(c) || c.is_alphanumeric() && in_word_script(c)
 }
 
 /// アクセントなどを付ける結合文字（ダイアクリティカルマーク）。
@@ -51,9 +51,7 @@ fn in_word_script(c: char) -> bool {
         // ギリシャ（拡張を含む）
         | 0x0370..=0x03ff | 0x1f00..=0x1fff
         // キリル（補助、拡張A/B/C/Dを含む）
-        | 0x0400..=0x052f | 0x1c80..=0x1c8f | 0x2de0..=0x2dff | 0xa640..=0xa69f | 0x1e030..=0x1e08f
-        // 結合文字のブロック（文字そのものは is_combining_mark で絞る）
-        | 0x0300..=0x036f | 0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x20d0..=0x20ff | 0xfe20..=0xfe2f)
+        | 0x0400..=0x052f | 0x1c80..=0x1c8f | 0x2de0..=0x2dff | 0xa640..=0xa69f | 0x1e030..=0x1e08f)
 }
 
 impl Buffer {
@@ -78,7 +76,7 @@ impl Buffer {
             redo: Vec::new(),
             saved_depth: Some(0),
             revision: 0,
-            typing: false,
+            typing: None,
         }
     }
 
@@ -103,7 +101,7 @@ impl Buffer {
         }
         result?;
         self.saved_depth = Some(self.undo.len());
-        self.typing = false;
+        self.typing = None;
         Ok(())
     }
 
@@ -158,26 +156,24 @@ impl Buffer {
         if !is_word_char(c) && c != ' ' {
             return self.replace(at..at, text);
         }
-        let joins = self.typing
-            && self.redo.is_empty()
-            // 保存した時点の段を書き換えると、未保存かどうかの判定が狂う
-            && self.saved_depth != Some(self.undo.len())
-            && self.undo.last().is_some_and(|edit| edit.removed.is_empty() && edit.at + edit.inserted.chars().count() == at);
-        let cursor = if joins {
+        // `typing` を立てるのは直前の打鍵だけで、Undo・Redo・保存・その他の編集で下ろす。
+        // だから同じ段に足すときは、Redoは空で、保存した時点の段でもない
+        let cursor = if self.typing == Some(at) {
+            debug_assert!(self.redo.is_empty() && self.saved_depth != Some(self.undo.len()));
             let cursor = self.apply("", text, at);
-            self.undo.last_mut().expect("joins で確かめた").inserted.push(c);
+            self.undo.last_mut().expect("typing のときは段がある").inserted.push(c);
             cursor
         } else {
             self.replace(at..at, text)
         };
         // 空白で語を閉じる
-        self.typing = is_word_char(c);
+        self.typing = is_word_char(c).then_some(cursor);
         cursor
     }
 
     /// 打ちかけの語を区切る。カーソルを動かしたときに呼ぶ。
     pub fn end_typing(&mut self) {
-        self.typing = false;
+        self.typing = None;
     }
 
     /// `range` を `text` に置き換え、置換後のカーソル位置を返す。
@@ -187,7 +183,7 @@ impl Buffer {
         if range.is_empty() && text.is_empty() {
             return at;
         }
-        self.typing = false;
+        self.typing = None;
         // 保存時点より前に戻ってから編集すると、保存時点へは戻れなくなる
         if self.saved_depth.is_some_and(|depth| depth > self.undo.len()) {
             self.saved_depth = None;
@@ -205,7 +201,7 @@ impl Buffer {
 
     /// Undoできれば、Undo後のカーソル位置を返す。
     pub fn undo(&mut self) -> Option<usize> {
-        self.typing = false;
+        self.typing = None;
         let edit = self.undo.pop()?;
         let cursor = self.apply(&edit.inserted, &edit.removed, edit.at);
         self.redo.push(edit);
@@ -214,7 +210,7 @@ impl Buffer {
 
     /// Redoできれば、Redo後のカーソル位置を返す。
     pub fn redo(&mut self) -> Option<usize> {
-        self.typing = false;
+        self.typing = None;
         let edit = self.redo.pop()?;
         let cursor = self.apply(&edit.removed, &edit.inserted, edit.at);
         self.undo.push(edit);

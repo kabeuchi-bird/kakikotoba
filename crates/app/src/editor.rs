@@ -440,12 +440,19 @@ impl Editor {
 
     /// キーで打った字。選択がなければ、英数字は語ごとにUndoの1段にまとめる。
     pub fn type_text(&mut self, text: &str) {
-        if self.selection().is_some() {
-            self.insert(text);
+        let range = self.selection().unwrap_or(self.cursor..self.cursor);
+        self.put_typed(range, text);
+    }
+
+    /// 打った字や確定した字を `range` に入れる。カーソル位置への挿入なら、英数字は語ごとにUndoの1段にまとめる。
+    fn put_typed(&mut self, range: Range<usize>, text: &str) {
+        // IMEの直接入力モードの英字も、確定として1字ずつ届く
+        let cursor = if range.is_empty() && range.start == self.cursor {
+            self.buffer.type_text(range.start, text)
         } else {
-            let cursor = self.buffer.type_text(self.cursor, text);
-            self.edited(cursor);
-        }
+            self.buffer.replace(range, text)
+        };
+        self.edited(cursor);
     }
 
     pub fn backspace(&mut self) {
@@ -532,13 +539,7 @@ impl Editor {
             let from = rope.char_to_utf16_cu(self.cursor).saturating_add_signed(start).min(end_of_text);
             rope.utf16_cu_to_char(from)..rope.utf16_cu_to_char((from + length).min(end_of_text))
         };
-        // IMEの直接入力モードの英字も、確定として1字ずつ届く
-        let cursor = if range.is_empty() && range.start == self.cursor {
-            self.buffer.type_text(range.start, text)
-        } else {
-            self.buffer.replace(range, text)
-        };
-        self.edited(cursor);
+        self.put_typed(range, text);
     }
 
     pub fn selected_text(&self) -> Option<String> {
