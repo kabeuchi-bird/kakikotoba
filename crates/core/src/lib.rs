@@ -7,6 +7,7 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
 use std::ops::Range;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ropey::Rope;
 
@@ -24,7 +25,7 @@ pub struct Buffer {
     redo: Vec<Edit>,
     /// 保存時点のUndo段数。保存時点へ戻れなくなったら `None`。
     saved_depth: Option<usize>,
-    /// 本文が変わるたびに増える。自動保存で変化を見分ける
+    /// 本文が変わるたびに新しい値になる。プロセス内のどのバッファとも重ならない
     revision: u64,
     /// 打ちかけの語の終わりの位置。最後のUndoの段がその語で、この位置に打てば同じ段に足す
     typing: Option<usize>,
@@ -33,6 +34,12 @@ pub struct Buffer {
 }
 
 const BOM: &str = "\u{feff}";
+
+/// 版の番号。文書を替えても前の文書の版と見分けられるよう、全バッファで通して数える
+fn next_revision() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Undoで語ごとにまとめる字。英字、数字、`'` `-`。全角の英数字は含めない。
 fn is_word_char(c: char) -> bool {
@@ -46,7 +53,7 @@ impl Buffer {
             undo: Vec::new(),
             redo: Vec::new(),
             saved_depth: Some(0),
-            revision: 0,
+            revision: next_revision(),
             typing: None,
             bom: false,
         }
@@ -132,7 +139,7 @@ impl Buffer {
         self.saved_depth != Some(self.undo.len())
     }
 
-    /// 本文の版。編集、Undo、Redoのたびに増える。自動保存で変化を見分けるのに使う。
+    /// 本文の版。編集、Undo、Redoのたびに変わり、別のバッファの版とも重ならない。
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -210,7 +217,7 @@ impl Buffer {
     }
 
     fn apply(&mut self, old: &str, new: &str, at: usize) -> usize {
-        self.revision += 1;
+        self.revision = next_revision();
         self.rope.remove(at..at + old.chars().count());
         self.rope.insert(at, new);
         at + new.chars().count()
