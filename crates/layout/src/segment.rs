@@ -13,9 +13,9 @@ pub(crate) enum Orientation {
 
 const TCY_DIGITS: Range<usize> = 2..4;
 
-/// 欧文の連続に含める文字。全角文字は含まない。
+/// 欧文の連続に含める文字。英字と、半角の数字・記号。全角文字は含まない。
 fn is_western(c: char) -> bool {
-    matches!(c, ' '..='~' | '\u{A1}'..='\u{2FF}' | '\u{370}'..='\u{52F}')
+    matches!(c, ' '..='~' | '\u{A1}'..='\u{2FF}' | '\u{370}'..='\u{52F}') || kakikotoba_core::script::is_letter(c)
 }
 
 fn classify(run: &str) -> Orientation {
@@ -102,6 +102,8 @@ mod tests {
         assert_eq!(parts("A12"), [(Rotated, "A12")]);
         assert_eq!(parts("12%"), [(Rotated, "12%")]);
         assert_eq!(parts("Ωμέγα"), [(Rotated, "Ωμέγα")]);
+        // 拡張ブロックの英字と、後から付けたアクセントも同じ連続に入る
+        assert_eq!(parts("あtệ aⱥ ἄλφα e\u{301}い"), [(Upright, "あ"), (Rotated, "tệ aⱥ ἄλφα e\u{301}"), (Upright, "い")]);
     }
 
     #[test]

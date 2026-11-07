@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+kakikotoba-core = { path = "../core" }
 kakikotoba-markup = { path = "../markup" }
 rustybuzz = "0.20.1"
 

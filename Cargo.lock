@@ -666,6 +666,7 @@ dependencies = [
 name = "kakikotoba-layout"
 version = "0.1.0"
 dependencies = [
+ "kakikotoba-core",
  "kakikotoba-markup",
  "kakikotoba-test-fonts",
  "rustybuzz",
