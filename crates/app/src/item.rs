@@ -131,6 +131,8 @@ pub mod qobject {
         #[qproperty(bool, can_undo, cxx_name = "canUndo")]
         #[qproperty(bool, can_redo, cxx_name = "canRedo")]
         #[qproperty(bool, has_selection, cxx_name = "hasSelection")]
+        #[qproperty(i32, char_count, cxx_name = "charCount")]
+        #[qproperty(i32, selection_char_count, cxx_name = "selectionCharCount")]
         #[qproperty(bool, modified)]
         #[qproperty(bool, has_file, cxx_name = "hasFile")]
         #[qproperty(bool, composing)]
@@ -325,6 +327,8 @@ pub struct VerticalEditorRust {
     can_undo: bool,
     can_redo: bool,
     has_selection: bool,
+    char_count: i32,
+    selection_char_count: i32,
     page_mode: bool,
     page_label: QString,
     modified: bool,
@@ -488,10 +492,13 @@ impl qobject::VerticalEditor {
         let (can_undo, can_redo, has_selection) = (editor.can_undo(), editor.can_redo(), editor.has_selection());
         let page_mode = editor.page_view().is_some();
         let composing = editor.is_composing();
+        let (char_count, selection_char_count) = editor.char_counts();
         let page_label = QString::from(editor.page_view().map_or(String::new(), |view| view.label()).as_str());
         self.as_mut().set_can_undo(can_undo);
         self.as_mut().set_can_redo(can_redo);
         self.as_mut().set_has_selection(has_selection);
+        self.as_mut().set_char_count(char_count as i32);
+        self.as_mut().set_selection_char_count(selection_char_count as i32);
         self.as_mut().set_page_mode(page_mode);
         self.as_mut().set_page_label(page_label);
         self.as_mut().set_modified(modified);

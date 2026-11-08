@@ -1,6 +1,7 @@
 //! 方言別パーサ → 共通AST（各ノードに元ソースのspanを保持）
 
 pub mod ast;
+pub mod count;
 pub mod highlight;
 mod markdown;
 mod pretnf;

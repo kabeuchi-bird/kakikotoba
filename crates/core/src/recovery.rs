@@ -81,7 +81,7 @@ impl Session {
 
     /// 写しを消す。もともとなければ何もしない。
     pub fn remove(&mut self) -> io::Result<()> {
-        // revision は文書ごとに0から数えるので、消せなくても次の文書は必ず書き出す
+        // 消せなくても、次は同じ版でも必ず書き出す
         self.written = None;
         if self.on_disk {
             match fs::remove_file(&self.file) {

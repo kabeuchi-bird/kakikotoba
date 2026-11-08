@@ -415,6 +415,17 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    footer: QQC2.ToolBar {
+        contentItem: QQC2.Label {
+            function count(n) {
+                return Number(n).toLocaleString(Qt.locale(), "f", 0) + "字";
+            }
+            horizontalAlignment: Text.AlignRight
+            text: (editor.hasSelection ? "選択 " + count(editor.selectionCharCount) + " / " : "")
+                + count(editor.charCount)
+        }
+    }
+
     pageStack.initialPage: Kirigami.Page {
         padding: 0
         globalToolBarStyle: Kirigami.ApplicationHeaderStyle.None

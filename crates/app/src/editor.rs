@@ -8,6 +8,7 @@ use kakikotoba_core::Buffer;
 use kakikotoba_core::recovery::{self, Session, Snapshot};
 use kakikotoba_layout::page::{PageFormat, PageSettings, SpreadMode};
 use kakikotoba_layout::{Cache, Layout, Rect, Run, Settings};
+use kakikotoba_markup::count::BodyText;
 use kakikotoba_markup::highlight::{Dialect, Highlighter, Options};
 
 use crate::fonts::{FontSlot, Fonts};
@@ -85,6 +86,8 @@ pub struct Editor {
     settings: Settings,
     highlighter: Highlighter,
     highlight_enabled: bool,
+    /// 文字数を数えるための本文。本文の版と記法の設定が変わったときだけ作り直す
+    body_text: ((u64, Options), BodyText),
     width: f32,
     height: f32,
     /// 右方向へのスクロール量。列は左へ進むので、大きいほど後ろの列が見える
@@ -122,14 +125,17 @@ impl Editor {
         let settings = settings_for(0.0);
         let dialect = Dialect::from_path(path.as_deref());
         let layout = Layout::new("", &fonts.edit.font, settings, &[]);
+        let options = Options { dialect, symbol_forms: true };
+        let body_text = BodyText::new(&kakikotoba_markup::parse(&buffer.rope().to_string(), options));
         let mut editor = Self {
+            body_text: ((buffer.revision(), options), body_text),
             buffer,
             path,
             fonts,
             layout,
             layout_cache: Cache::default(),
             settings,
-            highlighter: Highlighter::new(Options { dialect, symbol_forms: true }),
+            highlighter: Highlighter::new(options),
             highlight_enabled: true,
             width: 0.0,
             height: 0.0,
@@ -175,6 +181,20 @@ impl Editor {
             text.insert(self.cursor, &preedit.text);
         }
         let text = text.to_string();
+        // ponytail: 本文が変わるたびに全文を解析する（20万字で約8ms）。重ければ入力が止まってから数える
+        let (revision, options) = (self.buffer.revision(), self.markup_options());
+        if self.body_text.0 != (revision, options) {
+            // 未確定の文字は数えない。本文が変わるのはたいてい確定の後なので、組版用の文字列を使い回せる
+            let owned;
+            let source = match self.preedit {
+                Some(_) => {
+                    owned = self.buffer.rope().to_string();
+                    &owned
+                }
+                None => &text,
+            };
+            self.body_text = ((revision, options), BodyText::new(&kakikotoba_markup::parse(source, options)));
+        }
         let mut runs = Vec::new();
         if self.highlight_enabled {
             self.highlighter.update(&text);
@@ -831,6 +851,12 @@ impl Editor {
     pub fn has_selection(&self) -> bool {
         self.is_editable() && self.selection().is_some()
     }
+
+    /// 文書全体と選択範囲（なければ0）の文字数。記法、行頭の空白、改行、未確定の文字は数えず、見た目の1字を1と数える。
+    pub fn char_counts(&self) -> (usize, usize) {
+        let body = &self.body_text.1;
+        (body.total(), self.selection().map_or(0, |range| body.count(range)))
+    }
 }
 
 #[cfg(test)]
@@ -848,6 +874,22 @@ mod tests {
 
     fn text(editor: &Editor) -> String {
         editor.buffer.rope().to_string()
+    }
+
+    #[test]
+    fn char_counts_skip_markup_leading_spaces_line_breaks_and_preedit() {
+        with_editor("　|漢字《かんじ》\r\nAB\nう", |e| {
+            assert_eq!(e.char_counts(), (5, 0));
+            e.move_down(false);
+            e.set_preedit("かき", None);
+            assert_eq!(e.char_counts(), (5, 0));
+            e.set_preedit("", None);
+            e.select_all();
+            assert_eq!(e.char_counts(), (5, 5));
+            // 文書を替えたら数え直す
+            e.replace_document(Buffer::new("あ"), None);
+            assert_eq!(e.char_counts(), (1, 0));
+        });
     }
 
     #[test]

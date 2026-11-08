@@ -677,6 +677,7 @@ name = "kakikotoba-markup"
 version = "0.1.0"
 dependencies = [
  "pulldown-cmark",
+ "unicode-segmentation",
 ]
 
 [[package]]
