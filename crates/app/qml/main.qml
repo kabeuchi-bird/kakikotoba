@@ -54,7 +54,7 @@ Kirigami.ApplicationWindow {
     /// （閉じる動きの間に次のダイアログが開くと、閉じた側の onClosed が後から来る）
     function restoreFocus() {
         const dialogs = [commandSearch, pageSettingsDialog, fontSettingsDialog, metadataDialog,
-                         unsavedDialog, overwriteDialog, recoveryDialog];
+                         unsavedDialog, overwriteDialog, recoveryDialog, openDialog, saveDialog];
         if (!dialogs.some(dialog => dialog.visible)) {
             editor.forceActiveFocus();
         }

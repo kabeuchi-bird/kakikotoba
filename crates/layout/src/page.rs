@@ -229,6 +229,8 @@ struct Flow<'a, 'f> {
     centered: Option<Vec<Column>>,
     /// 全角ダブルクォートの開閉
     quote_open: bool,
+    /// 組んでいるブロックの字下げ（字数）
+    indent: f32,
 }
 
 impl<'a, 'f> Flow<'a, 'f> {
@@ -251,6 +253,7 @@ impl<'a, 'f> Flow<'a, 'f> {
             images: VecDeque::new(),
             centered: None,
             quote_open: false,
+            indent: 0.0,
         }
     }
 
@@ -302,6 +305,7 @@ impl<'a, 'f> Flow<'a, 'f> {
 
     fn text_block(&mut self, block: &Block, style: Style, width: usize, indent: f32, alignment: Alignment) {
         let mut lines = vec![Vec::new()];
+        self.indent = indent;
         self.inlines(&block.inlines, style, &mut lines);
         let limit = self.chars() - indent;
         for pieces in lines {
@@ -448,9 +452,10 @@ impl<'a, 'f> Flow<'a, 'f> {
         let mut size = style.scale * RUBY_SCALE;
         let mut shaped = self.serif.shape(ruby, size);
         let mut length: f32 = shaped.iter().map(|c| c.advance).sum();
-        // 1列より長いルビは、縮めて1列に収める
-        if length > self.chars() {
-            size *= self.chars() / length;
+        // 1列（字下げの後）より長いルビは、縮めて1列に収める
+        let limit = self.chars() - self.indent;
+        if length > limit {
+            size *= limit / length;
             shaped = self.serif.shape(ruby, size);
             length = shaped.iter().map(|c| c.advance).sum();
         }
@@ -752,6 +757,16 @@ mod tests {
             assert!(page.stops[0].rect.height <= 5.0 + 1e-3);
             let bottom = d.page_height * 0.09 + 5.0;
             assert!(page.glyphs.iter().all(|g| g.y <= bottom + 1e-3), "版面の地より下に出ない");
+        });
+    }
+
+    #[test]
+    fn ruby_in_an_indented_item_fits_after_the_indent() {
+        with_fonts(|font| {
+            let options = Options { dialect: Dialect::Markdown, symbol_forms: true };
+            let d = PagedDocument::new(&kakikotoba_markup::parse("- ｜字《あいうえおかきくけこさ》", options), font, font, SETTINGS);
+            let bottom = d.page_height * 0.09 + 5.0;
+            assert!(d.pages[0].glyphs.iter().all(|g| g.y <= bottom + 1e-3), "字下げの分も版面の地より下に出ない");
         });
     }
 
