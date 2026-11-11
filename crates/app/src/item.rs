@@ -62,6 +62,7 @@ pub mod qobject {
         fn init_item(item: Pin<&mut VerticalEditor>);
         fn focus_item(item: Pin<&mut VerticalEditor>);
         fn update_input_method();
+        fn commit_input_method();
         fn clipboard_text() -> QString;
         fn set_clipboard_text(text: &QString);
         fn new_raw_font(path: &QString, pixel_size: f64) -> UniquePtr<QRawFont>;
@@ -144,6 +145,10 @@ pub mod qobject {
         #[inherit]
         fn update(self: Pin<&mut VerticalEditor>);
 
+        /// 起動時に指定されたファイルを開けなかったときのエラーメッセージ。なければ空文字列。1度だけ返す
+        #[qinvokable]
+        #[cxx_name = "startupError"]
+        fn startup_error(self: &VerticalEditor) -> QString;
         #[qinvokable]
         #[cxx_name = "newDocument"]
         fn new_document(self: Pin<&mut VerticalEditor>);
@@ -167,6 +172,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "selectedText"]
         fn selected_text(self: &VerticalEditor) -> QString;
+
+        /// 開いた（保存した）後に、ファイルが外で変更されたか。保存の前に確かめる
+        #[qinvokable]
+        #[cxx_name = "changedOnDisk"]
+        fn changed_on_disk(self: &VerticalEditor) -> bool;
 
         // 以下の3つは失敗時にエラーメッセージ、成功時に空文字列を返す
         #[qinvokable]
@@ -294,6 +304,12 @@ const ALT: i32 = 0x0800_0000;
 
 thread_local! {
     static STARTUP_EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
+    static STARTUP_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// 起動時にファイルを開けなかったことを、ウィンドウが出てから通知できるように置く。
+pub fn set_startup_error(message: String) {
+    STARTUP_ERROR.set(message);
 }
 
 /// QMLがアイテムを生成するときに受け取る `Editor` を置く。
@@ -573,6 +589,10 @@ impl qobject::VerticalEditor {
         self.refresh();
     }
 
+    fn startup_error(&self) -> QString {
+        QString::from(STARTUP_ERROR.take().as_str())
+    }
+
     fn new_document(mut self: Pin<&mut Self>) {
         self.reset_ime();
         self.as_mut().editor_mut().new_document();
@@ -679,6 +699,10 @@ impl qobject::VerticalEditor {
     fn finish_file_operation(self: Pin<&mut Self>, result: Result<(), String>) -> QString {
         self.refresh();
         QString::from(result.err().unwrap_or_default().as_str())
+    }
+
+    fn changed_on_disk(&self) -> bool {
+        self.rust().editor.0.changed_on_disk()
     }
 
     fn save(mut self: Pin<&mut Self>) -> QString {
@@ -894,6 +918,12 @@ impl qobject::VerticalEditor {
         }
         qobject::focus_item(self.as_mut());
         let (x, y) = (qobject::mouse_x(event), qobject::mouse_y(event));
+        // QtのIM経路でも、クリックで確定する。確定は `input_method_event` へ再入して届くので、借用を持ったまま呼ばない
+        if self.rust().ime.is_none() && self.rust().editor.0.is_composing() {
+            self.as_mut().rust_mut().get_mut().ignore_drag = true;
+            qobject::commit_input_method();
+            return;
+        }
         let rust = self.as_mut().rust_mut().get_mut();
         // ignore_drag は1か所にまとめられるが、各 return の意図が読めるよう分けて書く
         if let Some(ime) = &rust.ime {

@@ -229,6 +229,8 @@ struct Flow<'a, 'f> {
     centered: Option<Vec<Column>>,
     /// 全角ダブルクォートの開閉
     quote_open: bool,
+    /// 組んでいるブロックの字下げ（字数）
+    indent: f32,
 }
 
 impl<'a, 'f> Flow<'a, 'f> {
@@ -251,6 +253,7 @@ impl<'a, 'f> Flow<'a, 'f> {
             images: VecDeque::new(),
             centered: None,
             quote_open: false,
+            indent: 0.0,
         }
     }
 
@@ -267,7 +270,10 @@ impl<'a, 'f> Flow<'a, 'f> {
                     self.next_page();
                 }
             }
-            BlockKind::PageCenterStart => self.centered = Some(Vec::new()),
+            // 閉じる前の開始は無視する（集めた列を捨てない）
+            BlockKind::PageCenterStart => {
+                self.centered.get_or_insert_with(Vec::new);
+            }
             BlockKind::PageCenterEnd => self.finish_centered(),
             BlockKind::Image { align, source } => {
                 self.images.push_back(PendingImage { align: *align, source_name: source.clone(), source: start });
@@ -299,6 +305,7 @@ impl<'a, 'f> Flow<'a, 'f> {
 
     fn text_block(&mut self, block: &Block, style: Style, width: usize, indent: f32, alignment: Alignment) {
         let mut lines = vec![Vec::new()];
+        self.indent = indent;
         self.inlines(&block.inlines, style, &mut lines);
         let limit = self.chars() - indent;
         for pieces in lines {
@@ -442,9 +449,22 @@ impl<'a, 'f> Flow<'a, 'f> {
             piece.glyphs.extend(glyphs_at(&cluster.glyphs, 0.0, piece.advance, style.scale * cluster.scale, style.sans));
             piece.advance += cluster.advance;
         }
-        let size = style.scale * RUBY_SCALE;
-        let shaped = self.serif.shape(ruby, size);
-        let length: f32 = shaped.iter().map(|c| c.advance).sum();
+        let mut size = style.scale * RUBY_SCALE;
+        let mut shaped = self.serif.shape(ruby, size);
+        let mut length: f32 = shaped.iter().map(|c| c.advance).sum();
+        // 1列（字下げの後）より長いルビは、縮めて1列に収める
+        let limit = self.chars() - self.indent;
+        if length > limit {
+            size *= limit / length;
+            shaped = self.serif.shape(ruby, size);
+            length = shaped.iter().map(|c| c.advance).sum();
+        }
+        // ルビが親文字より長ければ、ルビの長さだけ場所を取り、親文字を中央に置く（隣の字や版面の外へはみ出さない）
+        if length > piece.advance {
+            let shift = (length - piece.advance) / 2.0;
+            piece.glyphs.iter_mut().for_each(|glyph| glyph.y += shift);
+            piece.advance = length;
+        }
         let mut pen = (piece.advance - length) / 2.0;
         for cluster in shaped {
             piece.glyphs.extend(glyphs_at(&cluster.glyphs, style.scale * RUBY_CENTER, pen, size * cluster.scale, false));
@@ -712,6 +732,49 @@ mod tests {
             assert_eq!(ruby.len(), 3);
             let base = glyphs[3];
             assert!(ruby[0].x > base.x);
+        });
+    }
+
+    #[test]
+    fn ruby_longer_than_its_base_takes_its_own_length() {
+        with_fonts(|font| {
+            let d = paged("[私|わたくし]あ", font, SETTINGS);
+            let page = &d.pages[0];
+            // ルビ4字は2字分。親文字はその中央、次の字は2字分先
+            let (ruby, next) = (&page.stops[0].rect, &page.stops[1].rect);
+            assert!((ruby.height - 2.0).abs() < 1e-3 && (next.y - ruby.y - 2.0).abs() < 1e-3);
+            assert!(page.glyphs.iter().all(|g| g.y > ruby.y), "版面の天より上に出ない");
+            let base = page.glyphs.iter().find(|g| g.scale == 1.0).unwrap();
+            assert!(base.y > ruby.y + 1.0);
+        });
+    }
+
+    #[test]
+    fn ruby_longer_than_a_column_is_shrunk_into_it() {
+        with_fonts(|font| {
+            let d = paged("[字|あいうえおかきくけこさ]", font, SETTINGS);
+            let page = &d.pages[0];
+            assert!(page.stops[0].rect.height <= 5.0 + 1e-3);
+            let bottom = d.page_height * 0.09 + 5.0;
+            assert!(page.glyphs.iter().all(|g| g.y <= bottom + 1e-3), "版面の地より下に出ない");
+        });
+    }
+
+    #[test]
+    fn ruby_in_an_indented_item_fits_after_the_indent() {
+        with_fonts(|font| {
+            let options = Options { dialect: Dialect::Markdown, symbol_forms: true };
+            let d = PagedDocument::new(&kakikotoba_markup::parse("- ｜字《あいうえおかきくけこさ》", options), font, font, SETTINGS);
+            let bottom = d.page_height * 0.09 + 5.0;
+            assert!(d.pages[0].glyphs.iter().all(|g| g.y <= bottom + 1e-3), "字下げの分も版面の地より下に出ない");
+        });
+    }
+
+    #[test]
+    fn nested_page_center_start_keeps_what_came_before() {
+        with_fonts(|font| {
+            let d = paged("{\nあ\n{\nい\n}", font, SETTINGS);
+            assert_eq!(sources(&d), [vec![2, 6]]);
         });
     }
 
