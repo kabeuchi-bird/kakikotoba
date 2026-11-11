@@ -13,6 +13,8 @@ Kirigami.ApplicationWindow {
     /// 未保存の確認または保存先の選択が済んだ後に行う操作
     property var pendingAction: null
     property bool closeConfirmed: false
+    /// メニューを開いている間に、その項目が入力先を移したか（検索バーなど）
+    property bool focusMoved: false
 
     title: (editor.modified ? "*" : "") + (editor.documentName || "無題")
         + (editor.pageMode ? " (" + editor.pageLabel + ")" : "") + " — kakikotoba"
@@ -59,6 +61,8 @@ Kirigami.ApplicationWindow {
     function save() {
         if (!editor.hasFile) {
             saveDialog.open();
+        } else if (editor.changedOnDisk()) {
+            overwriteDialog.open();
         } else {
             finishSaving(editor.save());
         }
@@ -107,7 +111,10 @@ Kirigami.ApplicationWindow {
         recoveryDialog.open();
     }
 
-    Component.onCompleted: offerRecovery()
+    Component.onCompleted: {
+        succeeded(editor.startupError());
+        offerRecovery();
+    }
 
     Timer {
         interval: 5000
@@ -123,9 +130,10 @@ Kirigami.ApplicationWindow {
 
     /// 閉じたら編集領域へ入力を戻すメニュー
     component RestoringMenu: QQC2.Menu {
-        // メニューの項目が開いたダイアログから入力を奪わないように
+        onAboutToShow: root.focusMoved = false
+        // メニューの項目が開いたダイアログや検索バーから入力を奪わないように
         onClosed: {
-            if (![commandSearch, pageSettingsDialog, fontSettingsDialog, metadataDialog, unsavedDialog].some(dialog => dialog.visible)) {
+            if (!root.focusMoved && ![commandSearch, pageSettingsDialog, fontSettingsDialog, metadataDialog, unsavedDialog, overwriteDialog].some(dialog => dialog.visible)) {
                 editor.forceActiveFocus();
             }
         }
@@ -313,7 +321,6 @@ Kirigami.ApplicationWindow {
         text: "PreTNFの記号形式"
         checkable: true
         checked: settings.symbolFormsEnabled
-        enabled: settings.highlightEnabled
         onTriggered: {
             settings.symbolFormsEnabled = checked;
             root.applyHighlightOptions();
@@ -442,6 +449,7 @@ Kirigami.ApplicationWindow {
                 }
                 notFound = false;
                 visible = true;
+                root.focusMoved = true;
                 findField.selectAll();
                 findField.forceActiveFocus();
             }
@@ -753,6 +761,30 @@ Kirigami.ApplicationWindow {
             Kirigami.Action {
                 text: "キャンセル"
                 onTriggered: unsavedDialog.reject()
+            }
+        ]
+        onRejected: root.pendingAction = null
+        onClosed: editor.forceActiveFocus()
+    }
+
+    Kirigami.PromptDialog {
+        id: overwriteDialog
+        // 外側のクリックで閉じると、取り消しとして扱えない
+        closePolicy: QQC2.Popup.CloseOnEscape
+        title: "ファイルが他で変更されています"
+        subtitle: "開いた後に、このファイルが他のアプリで書き換えられたか、消されています。保存すると、その変更を上書きします。"
+        standardButtons: QQC2.Dialog.NoButton
+        customFooterActions: [
+            Kirigami.Action {
+                text: "上書き保存"
+                onTriggered: {
+                    overwriteDialog.close();
+                    root.finishSaving(editor.save());
+                }
+            },
+            Kirigami.Action {
+                text: "キャンセル"
+                onTriggered: overwriteDialog.reject()
             }
         ]
         onRejected: root.pendingAction = null

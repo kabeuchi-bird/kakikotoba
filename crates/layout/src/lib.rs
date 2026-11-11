@@ -138,12 +138,14 @@ impl<'a> Font<'a> {
                 });
             }
             let cluster = clusters.last_mut().expect("直前で追加済み");
-            cluster.glyphs.push((
-                font_id,
-                info.glyph_id as u16,
-                pos.x_offset as f32 * scale,
-                cluster.advance - pos.y_offset as f32 * scale,
-            ));
+            if !is_tab(text, byte_start) {
+                cluster.glyphs.push((
+                    font_id,
+                    info.glyph_id as u16,
+                    pos.x_offset as f32 * scale,
+                    cluster.advance - pos.y_offset as f32 * scale,
+                ));
+            }
             cluster.advance -= pos.y_advance as f32 * scale;
         }
         clusters
@@ -225,8 +227,9 @@ impl<'a> Font<'a> {
         let mut glyphs = Vec::new();
         let mut pen = 0.0;
         for (range, id, font) in self.runs(text) {
+            let part = &text[range];
             let mut buffer = UnicodeBuffer::new();
-            buffer.push_str(&text[range]);
+            buffer.push_str(part);
             buffer.set_direction(Direction::LeftToRight);
             buffer.set_script(script::HAN);
             buffer.set_language(font.language.clone());
@@ -234,12 +237,19 @@ impl<'a> Font<'a> {
 
             let scale = font_size / font.face.units_per_em() as f32;
             for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
-                glyphs.push((id, info.glyph_id as u16, pen + pos.x_offset as f32 * scale, -pos.y_offset as f32 * scale));
+                if !is_tab(part, info.cluster as usize) {
+                    glyphs.push((id, info.glyph_id as u16, pen + pos.x_offset as f32 * scale, -pos.y_offset as f32 * scale));
+                }
                 pen += pos.x_advance as f32 * scale;
             }
         }
         (glyphs, pen)
     }
+}
+
+/// タブか。フォントに字形がないので、豆腐を出さずに送りだけを取る（1字分の空きになる）。
+fn is_tab(text: &str, byte: usize) -> bool {
+    text.as_bytes().get(byte) == Some(&b'\t')
 }
 
 /// 文字列の先頭と末尾の文字。空なら空白。
@@ -828,6 +838,15 @@ mod tests {
             }
             // 今回の文書にない段落は残さない
             assert_eq!(cache.paragraphs.len(), 1);
+        });
+    }
+
+    #[test]
+    fn tab_is_a_blank_cell_without_a_glyph() {
+        with_font(|font| {
+            let layout = Layout::new("あ\tい", font, SETTINGS, &[]);
+            assert_eq!(layout.glyphs.iter().map(|g| g.char_index).collect::<Vec<_>>(), [0, 2]);
+            assert_eq!(layout.cursor_rect(2).y, 20.0);
         });
     }
 

@@ -6,6 +6,7 @@ pub mod script;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
 use std::ops::Range;
+use std::os::unix::fs::{MetadataExt, fchown};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -101,16 +102,32 @@ impl Buffer {
         Ok(())
     }
 
-    fn write_replacing(&self, tmp: &Path, target: &Path) -> io::Result<()> {
-        let mut writer = BufWriter::new(File::create(tmp)?);
+    fn write_body(&self, file: File) -> io::Result<File> {
+        let mut writer = BufWriter::new(file);
         if self.bom {
             writer.write_all(BOM.as_bytes())?;
         }
         self.rope.write_to(&mut writer)?;
-        writer.flush()?;
-        let file = writer.into_inner().map_err(|e| e.into_error())?;
+        writer.into_inner().map_err(|e| e.into_error())
+    }
+
+    fn write_replacing(&self, tmp: &Path, target: &Path) -> io::Result<()> {
+        let file = match File::create(tmp) {
+            Ok(file) => file,
+            // ディレクトリに書けなくても、ファイルには書けることがある。置き換えられないので直接書く
+            // （途中で失敗すると元の中身は残らないが、保存できないよりよい）
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied && target.is_file() => {
+                return self.write_body(File::options().write(true).truncate(true).open(target)?)?.sync_all();
+            }
+            Err(e) => return Err(e),
+        };
+        let file = self.write_body(file)?;
         match fs::metadata(target) {
-            Ok(meta) => file.set_permissions(meta.permissions())?,
+            Ok(meta) => {
+                // 所有者を引き継ぐ。権限がなくて変えられなければ、自分の所有になる
+                let _ = fchown(&file, Some(meta.uid()), Some(meta.gid()));
+                file.set_permissions(meta.permissions())?;
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
@@ -306,6 +323,24 @@ mod tests {
         assert!(b.is_modified());
 
         assert_eq!(Buffer::load(&path).unwrap().rope().to_string(), "あ");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_writes_in_place_when_the_directory_is_not_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("kakikotoba-readonly-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("本文.txt");
+        fs::write(&path, "前").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let mut b = Buffer::load(&path).unwrap();
+        b.replace(0..1, "後");
+        let saved = b.save(&path);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        saved.unwrap();
+        assert!(!b.is_modified());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "後");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -267,7 +267,10 @@ impl<'a, 'f> Flow<'a, 'f> {
                     self.next_page();
                 }
             }
-            BlockKind::PageCenterStart => self.centered = Some(Vec::new()),
+            // 閉じる前の開始は無視する（集めた列を捨てない）
+            BlockKind::PageCenterStart => {
+                self.centered.get_or_insert_with(Vec::new);
+            }
             BlockKind::PageCenterEnd => self.finish_centered(),
             BlockKind::Image { align, source } => {
                 self.images.push_back(PendingImage { align: *align, source_name: source.clone(), source: start });
@@ -445,6 +448,12 @@ impl<'a, 'f> Flow<'a, 'f> {
         let size = style.scale * RUBY_SCALE;
         let shaped = self.serif.shape(ruby, size);
         let length: f32 = shaped.iter().map(|c| c.advance).sum();
+        // ルビが親文字より長ければ、ルビの長さだけ場所を取り、親文字を中央に置く（隣の字や版面の外へはみ出さない）
+        if length > piece.advance {
+            let shift = (length - piece.advance) / 2.0;
+            piece.glyphs.iter_mut().for_each(|glyph| glyph.y += shift);
+            piece.advance = length;
+        }
         let mut pen = (piece.advance - length) / 2.0;
         for cluster in shaped {
             piece.glyphs.extend(glyphs_at(&cluster.glyphs, style.scale * RUBY_CENTER, pen, size * cluster.scale, false));
@@ -712,6 +721,28 @@ mod tests {
             assert_eq!(ruby.len(), 3);
             let base = glyphs[3];
             assert!(ruby[0].x > base.x);
+        });
+    }
+
+    #[test]
+    fn ruby_longer_than_its_base_takes_its_own_length() {
+        with_fonts(|font| {
+            let d = paged("[私|わたくし]あ", font, SETTINGS);
+            let page = &d.pages[0];
+            // ルビ4字は2字分。親文字はその中央、次の字は2字分先
+            let (ruby, next) = (&page.stops[0].rect, &page.stops[1].rect);
+            assert!((ruby.height - 2.0).abs() < 1e-3 && (next.y - ruby.y - 2.0).abs() < 1e-3);
+            assert!(page.glyphs.iter().all(|g| g.y > ruby.y), "版面の天より上に出ない");
+            let base = page.glyphs.iter().find(|g| g.scale == 1.0).unwrap();
+            assert!(base.y > ruby.y + 1.0);
+        });
+    }
+
+    #[test]
+    fn nested_page_center_start_keeps_what_came_before() {
+        with_fonts(|font| {
+            let d = paged("{\nあ\n{\nい\n}", font, SETTINGS);
+            assert_eq!(sources(&d), [vec![2, 6]]);
         });
     }
 

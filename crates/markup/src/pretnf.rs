@@ -209,6 +209,10 @@ pub(crate) fn bar_ruby(chars: &[char], i: usize, end: usize) -> Option<(Node, us
     if open == i + 1 || close == open + 1 {
         return None;
     }
+    // 離れた `《` を拾わない。間に別の `|` があればそちらが始まりで、`《《` は傍点
+    if chars[i + 1..open].iter().any(|c| matches!(c, '|' | '｜')) || chars[open + 1] == '《' {
+        return None;
+    }
     Some((Node::Ruby { whole: i..close + 1, base: i + 1..open, ruby: open + 1..close }, close + 1))
 }
 
@@ -484,6 +488,17 @@ mod tests {
         assert_eq!(children[0], text("傍", 1..2));
         assert!(matches!(children[1].kind, InlineKind::Ruby { .. }));
         assert!(matches!(d.blocks[0].inlines[1].kind, InlineKind::Sideline(_)));
+    }
+
+    #[test]
+    fn bar_ruby_does_not_reach_for_a_distant_bracket() {
+        let d = doc("A|B の《《傍点》》");
+        assert_eq!(d.blocks[0].inlines[0], text("A|B の", 0..5));
+        assert!(matches!(d.blocks[0].inlines[1].kind, InlineKind::Emphasis(_)));
+        // 近い方の `|` から始まる
+        let d = doc("A|B｜字《じ》");
+        assert_eq!(d.blocks[0].inlines[0], text("A|B", 0..3));
+        assert_eq!(d.blocks[0].inlines[1].kind, InlineKind::Ruby { base: "字".into(), ruby: "じ".into() });
     }
 
     #[test]

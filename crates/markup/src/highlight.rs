@@ -34,10 +34,10 @@ pub enum Dialect {
 }
 
 impl Dialect {
-    /// 拡張子で方言を選ぶ。`.md` 以外（新規文書を含む）はPreTNF。
+    /// 拡張子で方言を選ぶ。`.md`（大小は区別しない）以外はPreTNF。新規文書もPreTNF。
     pub fn from_path(path: Option<&Path>) -> Self {
         match path.and_then(Path::extension) {
-            Some(extension) if extension == "md" => Self::Markdown,
+            Some(extension) if extension.eq_ignore_ascii_case("md") => Self::Markdown,
             _ => Self::PreTnf,
         }
     }
@@ -386,6 +386,7 @@ mod tests {
     #[test]
     fn dialect_follows_extension() {
         assert_eq!(Dialect::from_path(Some(Path::new("a.md"))), Dialect::Markdown);
+        assert_eq!(Dialect::from_path(Some(Path::new("A.MD"))), Dialect::Markdown);
         assert_eq!(Dialect::from_path(Some(Path::new("a.txt"))), Dialect::PreTnf);
         assert_eq!(Dialect::from_path(Some(Path::new("a"))), Dialect::PreTnf);
         assert_eq!(Dialect::from_path(None), Dialect::PreTnf);

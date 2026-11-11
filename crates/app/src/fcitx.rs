@@ -44,6 +44,8 @@ const KEYCODE_LEFT: u32 = 113;
 const KEYCODE_RIGHT: u32 = 114;
 const KEYCODE_DOWN: u32 = 116;
 const STATE_SHIFT: u32 = 1;
+const STATE_CONTROL: u32 = 1 << 2;
+const STATE_ALT: u32 = 1 << 3;
 
 /// Qtのキーイベントのうち、fcitx5が処理しなかったときに要るもの。
 pub struct QtKey {
@@ -94,9 +96,15 @@ fn qt_key_from_keysym(sym: u32, state: u32) -> Option<QtKey> {
     const KEY_RIGHT: i32 = 0x0100_0014;
     const KEY_DOWN: i32 = 0x0100_0015;
     const SHIFT: i32 = 0x0200_0000;
+    const CONTROL: i32 = 0x0400_0000;
+    const ALT: i32 = 0x0800_0000;
     const UNICODE_KEYSYM_BASE: u32 = 0x0100_0000;
 
-    let modifiers = if state & STATE_SHIFT != 0 { SHIFT } else { 0 };
+    // CtrlやAltを落とすと、Ctrl+Aなどが字として入力される
+    let modifiers = [(STATE_SHIFT, SHIFT), (STATE_CONTROL, CONTROL), (STATE_ALT, ALT)]
+        .iter()
+        .filter(|(bit, _)| state & bit != 0)
+        .fold(0, |modifiers, (_, modifier)| modifiers | modifier);
     let named = |key| Some(QtKey { key, modifiers, text: String::new() });
     match sym {
         KEYSYM_BACKSPACE => named(KEY_BACKSPACE),
@@ -382,6 +390,7 @@ mod tests {
         assert_eq!(qt_key_from_keysym(0x0100_3042, 0).unwrap().text, "あ");
         let key = qt_key_from_keysym(KEYSYM_DOWN, STATE_SHIFT).unwrap();
         assert_eq!((key.key, key.modifiers, key.text.as_str()), (0x0100_0015, 0x0200_0000, ""));
+        assert_eq!(qt_key_from_keysym(0x61, STATE_CONTROL | STATE_ALT).unwrap().modifiers, 0x0c00_0000);
         // Shift単体など
         assert!(qt_key_from_keysym(0xffe1, 0).is_none());
     }

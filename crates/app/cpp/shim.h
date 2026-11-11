@@ -41,6 +41,10 @@ inline int run_application(const QString& url) {
     QGuiApplication::setDesktopFileName(QStringLiteral("kakikotoba"));
     QQmlApplicationEngine engine;
     engine.load(QUrl(url));
+    // 読み込めなければ（Kirigamiがないなど）ウィンドウが出ないので、動き続けずに終了する
+    if (engine.rootObjects().isEmpty()) {
+        return 1;
+    }
     return app.exec();
 }
 
@@ -57,6 +61,11 @@ void focus_item(Item& item) {
 
 inline void update_input_method() {
     QGuiApplication::inputMethod()->update(Qt::ImQueryAll);
+}
+
+// 未確定の文字を確定させる。確定はinputMethodEventで届く
+inline void commit_input_method() {
+    QGuiApplication::inputMethod()->commit();
 }
 
 inline QString clipboard_text() { return QGuiApplication::clipboard()->text(); }

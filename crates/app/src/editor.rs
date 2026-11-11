@@ -3,6 +3,7 @@
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use kakikotoba_core::Buffer;
 use kakikotoba_core::recovery::{self, Session, Snapshot};
@@ -21,6 +22,9 @@ const CHARS_PER_COLUMN: usize = 39;
 const HANGING_CHARS: usize = 1;
 const COLUMN_PITCH_RATIO: f32 = 1.75;
 const MIN_FONT_SIZE: f32 = 4.0;
+/// 字サイズの刻み。高さが1px変わるたびに全段落を組み直さないよう、切り下げて揃える
+// ponytail: 刻みをまたぐたびに全体を組み直す（20万字で約80ms）。重ければemで組んで描画時に拡縮する
+const FONT_SIZE_STEP: f32 = 0.25;
 const CARET_THICKNESS: f32 = 2.0;
 const PREEDIT_LINE_WIDTH: f32 = 1.0;
 /// fcitx-utils/textformatflags.h の HighLight。変換対象の文節に付く
@@ -80,6 +84,8 @@ pub struct CandidatePaint {
 pub struct Editor {
     buffer: Buffer,
     path: Option<PathBuf>,
+    /// 文書をパスに結び付けた（開いた、保存した）ときのファイルの更新時刻。ファイルがなければ `None`
+    disk_stamp: Option<SystemTime>,
     pub fonts: Fonts,
     layout: Layout,
     layout_cache: Cache,
@@ -111,8 +117,13 @@ pub struct Editor {
     autosave_failed: bool,
 }
 
+fn disk_stamp(path: Option<&Path>) -> Option<SystemTime> {
+    path.and_then(|path| std::fs::metadata(path).ok()).and_then(|meta| meta.modified().ok())
+}
+
 fn settings_for(height: f32) -> Settings {
-    let font_size = ((height - 2.0 * MARGIN) / (CHARS_PER_COLUMN + HANGING_CHARS) as f32).max(MIN_FONT_SIZE);
+    let exact = (height - 2.0 * MARGIN) / (CHARS_PER_COLUMN + HANGING_CHARS) as f32;
+    let font_size = ((exact / FONT_SIZE_STEP).floor() * FONT_SIZE_STEP).max(MIN_FONT_SIZE);
     Settings {
         font_size,
         chars_per_column: CHARS_PER_COLUMN,
@@ -130,6 +141,7 @@ impl Editor {
         let mut editor = Self {
             body_text: ((buffer.revision(), options), body_text),
             buffer,
+            disk_stamp: disk_stamp(path.as_deref()),
             path,
             fonts,
             layout,
@@ -621,13 +633,21 @@ impl Editor {
     pub fn save(&mut self) -> io::Result<()> {
         let path = self.path.clone().ok_or(io::ErrorKind::InvalidInput)?;
         self.buffer.save(&path)?;
+        self.disk_stamp = disk_stamp(Some(&path));
         self.remove_recovery();
         Ok(())
+    }
+
+    /// 開いた（保存した）後に、ファイルがこのアプリの外で書き換えられた、作られた、消されたか。
+    /// 保存すると外での変更を上書きするので、保存の前に確かめる。
+    pub fn changed_on_disk(&self) -> bool {
+        self.path.is_some() && disk_stamp(self.path.as_deref()) != self.disk_stamp
     }
 
     pub fn save_as(&mut self, path: PathBuf) -> io::Result<()> {
         self.buffer.save(&path)?;
         self.remove_recovery();
+        self.disk_stamp = disk_stamp(Some(&path));
         self.path = Some(path);
         self.update_highlighter(self.highlighter.options().symbol_forms);
         self.relayout();
@@ -744,6 +764,8 @@ impl Editor {
         self.remove_recovery();
         self.buffer = buffer;
         self.page_view = None;
+        // 復元した文書は、元のファイルが新しいかどうかを復元の前に示している
+        self.disk_stamp = disk_stamp(path.as_deref());
         self.path = path;
         self.update_highlighter(self.highlighter.options().symbol_forms);
         self.scroll = 0.0;
@@ -874,6 +896,15 @@ mod tests {
 
     fn text(editor: &Editor) -> String {
         editor.buffer.rope().to_string()
+    }
+
+    #[test]
+    fn font_size_changes_in_steps_as_the_window_grows() {
+        let sizes: Vec<f32> = (0..40).map(|extra| settings_for(800.0 + extra as f32).font_size).collect();
+        let mut distinct = sizes.clone();
+        distinct.dedup();
+        assert!(distinct.len() <= 5, "{distinct:?}");
+        assert!(sizes.is_sorted() && sizes.iter().all(|size| size % FONT_SIZE_STEP == 0.0));
     }
 
     #[test]
@@ -1111,6 +1142,31 @@ mod tests {
             assert_eq!(e.cursor, 0);
             assert_eq!(e.buffer.undo(), None);
 
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn change_on_disk_is_noticed_until_the_next_save() {
+        with_editor("あ", |e| {
+            let dir = std::env::temp_dir().join(format!("kakikotoba-stamp-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("本文.txt");
+            assert!(!e.changed_on_disk(), "無題の文書にはファイルがない");
+            e.save_as(path.clone()).unwrap();
+            assert!(!e.changed_on_disk());
+
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(SystemTime::UNIX_EPOCH).unwrap();
+            assert!(e.changed_on_disk());
+            e.save().unwrap();
+            assert!(!e.changed_on_disk());
+
+            std::fs::remove_file(&path).unwrap();
+            assert!(e.changed_on_disk(), "消されたのも変更");
+            e.open(dir.join("ない.txt")).unwrap_err();
+            std::fs::write(&path, "い").unwrap();
+            e.open(path).unwrap();
+            assert!(!e.changed_on_disk());
             std::fs::remove_dir_all(&dir).unwrap();
         });
     }
