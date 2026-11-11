@@ -138,14 +138,16 @@ impl<'a> Font<'a> {
                 });
             }
             let cluster = clusters.last_mut().expect("直前で追加済み");
-            if !is_tab(text, byte_start) {
-                cluster.glyphs.push((
-                    font_id,
-                    info.glyph_id as u16,
-                    pos.x_offset as f32 * scale,
-                    cluster.advance - pos.y_offset as f32 * scale,
-                ));
+            if is_tab(text, byte_start) {
+                cluster.advance += font_size;
+                continue;
             }
+            cluster.glyphs.push((
+                font_id,
+                info.glyph_id as u16,
+                pos.x_offset as f32 * scale,
+                cluster.advance - pos.y_offset as f32 * scale,
+            ));
             cluster.advance -= pos.y_advance as f32 * scale;
         }
         clusters
@@ -237,9 +239,11 @@ impl<'a> Font<'a> {
 
             let scale = font_size / font.face.units_per_em() as f32;
             for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
-                if !is_tab(part, info.cluster as usize) {
-                    glyphs.push((id, info.glyph_id as u16, pen + pos.x_offset as f32 * scale, -pos.y_offset as f32 * scale));
+                if is_tab(part, info.cluster as usize) {
+                    pen += font_size;
+                    continue;
                 }
+                glyphs.push((id, info.glyph_id as u16, pen + pos.x_offset as f32 * scale, -pos.y_offset as f32 * scale));
                 pen += pos.x_advance as f32 * scale;
             }
         }
@@ -247,7 +251,7 @@ impl<'a> Font<'a> {
     }
 }
 
-/// タブか。フォントに字形がないので、豆腐を出さずに送りだけを取る（1字分の空きになる）。
+/// タブか。フォントに字形がないので、豆腐を出さずに1字分の空きにする（送りもフォントに任せない）。
 fn is_tab(text: &str, byte: usize) -> bool {
     text.as_bytes().get(byte) == Some(&b'\t')
 }
@@ -847,6 +851,10 @@ mod tests {
             let layout = Layout::new("あ\tい", font, SETTINGS, &[]);
             assert_eq!(layout.glyphs.iter().map(|g| g.char_index).collect::<Vec<_>>(), [0, 2]);
             assert_eq!(layout.cursor_rect(2).y, 20.0);
+            let (glyphs, width) = font.shape_line("a\tb", 10.0);
+            let (_, without) = font.shape_line("ab", 10.0);
+            assert_eq!(glyphs.len(), 2);
+            assert!((width - without - 10.0).abs() < 1e-3, "{width} {without}");
         });
     }
 

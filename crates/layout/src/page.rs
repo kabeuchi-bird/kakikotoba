@@ -445,9 +445,15 @@ impl<'a, 'f> Flow<'a, 'f> {
             piece.glyphs.extend(glyphs_at(&cluster.glyphs, 0.0, piece.advance, style.scale * cluster.scale, style.sans));
             piece.advance += cluster.advance;
         }
-        let size = style.scale * RUBY_SCALE;
-        let shaped = self.serif.shape(ruby, size);
-        let length: f32 = shaped.iter().map(|c| c.advance).sum();
+        let mut size = style.scale * RUBY_SCALE;
+        let mut shaped = self.serif.shape(ruby, size);
+        let mut length: f32 = shaped.iter().map(|c| c.advance).sum();
+        // 1列より長いルビは、縮めて1列に収める
+        if length > self.chars() {
+            size *= self.chars() / length;
+            shaped = self.serif.shape(ruby, size);
+            length = shaped.iter().map(|c| c.advance).sum();
+        }
         // ルビが親文字より長ければ、ルビの長さだけ場所を取り、親文字を中央に置く（隣の字や版面の外へはみ出さない）
         if length > piece.advance {
             let shift = (length - piece.advance) / 2.0;
@@ -735,6 +741,17 @@ mod tests {
             assert!(page.glyphs.iter().all(|g| g.y > ruby.y), "版面の天より上に出ない");
             let base = page.glyphs.iter().find(|g| g.scale == 1.0).unwrap();
             assert!(base.y > ruby.y + 1.0);
+        });
+    }
+
+    #[test]
+    fn ruby_longer_than_a_column_is_shrunk_into_it() {
+        with_fonts(|font| {
+            let d = paged("[字|あいうえおかきくけこさ]", font, SETTINGS);
+            let page = &d.pages[0];
+            assert!(page.stops[0].rect.height <= 5.0 + 1e-3);
+            let bottom = d.page_height * 0.09 + 5.0;
+            assert!(page.glyphs.iter().all(|g| g.y <= bottom + 1e-3), "版面の地より下に出ない");
         });
     }
 

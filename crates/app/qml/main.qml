@@ -50,6 +50,16 @@ Kirigami.ApplicationWindow {
         return !error;
     }
 
+    /// 編集領域へ入力を戻す。閉じたダイアログの後に別のダイアログが開いていれば、そちらから奪わない
+    /// （閉じる動きの間に次のダイアログが開くと、閉じた側の onClosed が後から来る）
+    function restoreFocus() {
+        const dialogs = [commandSearch, pageSettingsDialog, fontSettingsDialog, metadataDialog,
+                         unsavedDialog, overwriteDialog, recoveryDialog];
+        if (!dialogs.some(dialog => dialog.visible)) {
+            editor.forceActiveFocus();
+        }
+    }
+
     function runPending() {
         const action = pendingAction;
         pendingAction = null;
@@ -131,10 +141,10 @@ Kirigami.ApplicationWindow {
     /// 閉じたら編集領域へ入力を戻すメニュー
     component RestoringMenu: QQC2.Menu {
         onAboutToShow: root.focusMoved = false
-        // メニューの項目が開いたダイアログや検索バーから入力を奪わないように
+        // メニューの項目が開いた検索バーから入力を奪わないように
         onClosed: {
-            if (!root.focusMoved && ![commandSearch, pageSettingsDialog, fontSettingsDialog, metadataDialog, unsavedDialog, overwriteDialog].some(dialog => dialog.visible)) {
-                editor.forceActiveFocus();
+            if (!root.focusMoved) {
+                root.restoreFocus();
             }
         }
     }
@@ -604,7 +614,7 @@ Kirigami.ApplicationWindow {
             }
         }
         onClosed: {
-            editor.forceActiveFocus();
+            root.restoreFocus();
             const command = chosen;
             chosen = null;
             if (command) {
@@ -617,7 +627,7 @@ Kirigami.ApplicationWindow {
         id: metadataDialog
         title: "文書情報"
         standardButtons: QQC2.Dialog.Close
-        onClosed: editor.forceActiveFocus()
+        onClosed: root.restoreFocus()
     }
 
     Kirigami.Dialog {
@@ -625,7 +635,7 @@ Kirigami.ApplicationWindow {
         title: "ページ設定"
         standardButtons: QQC2.Dialog.Close
         padding: Kirigami.Units.largeSpacing
-        onClosed: editor.forceActiveFocus()
+        onClosed: root.restoreFocus()
 
         GridLayout {
             columns: 2
@@ -722,7 +732,7 @@ Kirigami.ApplicationWindow {
                 fonts = [{ text: "既定", value: "" }, ...installed];
             }
         }
-        onClosed: editor.forceActiveFocus()
+        onClosed: root.restoreFocus()
 
         GridLayout {
             columns: 2
@@ -764,7 +774,7 @@ Kirigami.ApplicationWindow {
             }
         ]
         onRejected: root.pendingAction = null
-        onClosed: editor.forceActiveFocus()
+        onClosed: root.restoreFocus()
     }
 
     Kirigami.PromptDialog {
@@ -788,7 +798,7 @@ Kirigami.ApplicationWindow {
             }
         ]
         onRejected: root.pendingAction = null
-        onClosed: editor.forceActiveFocus()
+        onClosed: root.restoreFocus()
     }
 
     Kirigami.PromptDialog {
@@ -826,7 +836,7 @@ Kirigami.ApplicationWindow {
             editor.skipPendingRecovery();
             Qt.callLater(root.offerRecovery);
         }
-        onClosed: editor.forceActiveFocus()
+        onClosed: root.restoreFocus()
     }
 
     FileDialog {

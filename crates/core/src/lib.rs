@@ -9,6 +9,7 @@ use std::ops::Range;
 use std::os::unix::fs::{MetadataExt, fchown};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use ropey::Rope;
 
@@ -32,6 +33,8 @@ pub struct Buffer {
     typing: Option<usize>,
     /// 開いたファイルの先頭にBOMがあったか。本文には入れず、保存のときに付け直す
     bom: bool,
+    /// 結び付けたファイルの、読んだ（書いた）時点の更新時刻。ファイルがなければ `None`
+    disk_stamp: Option<SystemTime>,
 }
 
 const BOM: &str = "\u{feff}";
@@ -57,24 +60,35 @@ impl Buffer {
             revision: next_revision(),
             typing: None,
             bom: false,
+            disk_stamp: None,
         }
     }
 
     /// UTF-8以外のファイルは `InvalidData` エラーになる。先頭のBOMは本文に入れない。
     pub fn load(path: &Path) -> io::Result<Self> {
-        let text = fs::read_to_string(path)?;
+        let mut file = File::open(path)?;
+        // 読む前に取る。読んでいる間に書き換えられても、時刻が変わるので外での変更として分かる
+        let disk_stamp = file.metadata()?.modified().ok();
+        let mut text = String::new();
+        file.read_to_string(&mut text)?;
         let body = text.strip_prefix(BOM);
-        Ok(Self { bom: body.is_some(), ..Self::new(body.unwrap_or(&text)) })
+        Ok(Self { bom: body.is_some(), disk_stamp, ..Self::new(body.unwrap_or(&text)) })
     }
 
     /// 異常終了から復元した本文。ファイルの中身とは違うので、未保存の状態で始める。
     /// 写しはBOMの有無を持たないので、保存先になる元のファイルに合わせる。
+    /// 元のファイルが写しより新しいことは復元の前に示しているので、復元した時点の状態を基準にする。
     pub fn recovered(text: &str, path: Option<&Path>) -> Self {
+        let file = path.and_then(|path| File::open(path).ok());
+        let disk_stamp = file.as_ref().and_then(|file| file.metadata().ok()?.modified().ok());
         let mut head = [0; BOM.len()];
-        let bom = path.is_some_and(|path| {
-            File::open(path).and_then(|mut file| file.read_exact(&mut head)).is_ok() && head == *BOM.as_bytes()
-        });
-        Self { saved_depth: None, bom, ..Self::new(text) }
+        let bom = file.is_some_and(|mut file| file.read_exact(&mut head).is_ok() && head == *BOM.as_bytes());
+        Self { saved_depth: None, bom, disk_stamp, ..Self::new(text) }
+    }
+
+    /// 結び付けたファイルの、読んだ（書いた）時点の更新時刻。外で変更されたかを見るのに使う。
+    pub fn disk_stamp(&self) -> Option<SystemTime> {
+        self.disk_stamp
     }
 
     /// 書き込み途中で失敗しても元ファイルを壊さないよう、一時ファイル経由で置き換える。
@@ -96,32 +110,20 @@ impl Buffer {
         if result.is_err() {
             let _ = fs::remove_file(&tmp);
         }
-        result?;
+        self.disk_stamp = result?;
         self.saved_depth = Some(self.undo.len());
         self.typing = None;
         Ok(())
     }
 
-    fn write_body(&self, file: File) -> io::Result<File> {
-        let mut writer = BufWriter::new(file);
+    /// 書いたファイルの更新時刻を返す。名前の変更では変わらないので、置き換えた後のファイルのものと同じ。
+    fn write_replacing(&self, tmp: &Path, target: &Path) -> io::Result<Option<SystemTime>> {
+        let mut writer = BufWriter::new(File::create(tmp)?);
         if self.bom {
             writer.write_all(BOM.as_bytes())?;
         }
         self.rope.write_to(&mut writer)?;
-        writer.into_inner().map_err(|e| e.into_error())
-    }
-
-    fn write_replacing(&self, tmp: &Path, target: &Path) -> io::Result<()> {
-        let file = match File::create(tmp) {
-            Ok(file) => file,
-            // ディレクトリに書けなくても、ファイルには書けることがある。置き換えられないので直接書く
-            // （途中で失敗すると元の中身は残らないが、保存できないよりよい）
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied && target.is_file() => {
-                return self.write_body(File::options().write(true).truncate(true).open(target)?)?.sync_all();
-            }
-            Err(e) => return Err(e),
-        };
-        let file = self.write_body(file)?;
+        let file = writer.into_inner().map_err(|e| e.into_error())?;
         match fs::metadata(target) {
             Ok(meta) => {
                 // 所有者を引き継ぐ。権限がなくて変えられなければ、自分の所有になる
@@ -132,12 +134,13 @@ impl Buffer {
             Err(e) => return Err(e),
         }
         file.sync_all()?;
+        let stamp = file.metadata()?.modified().ok();
         fs::rename(tmp, target)?;
         // リネームの永続化。失敗しても保存内容自体は書き込み済み
         if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
             let _ = File::open(parent).and_then(|dir| dir.sync_all());
         }
-        Ok(())
+        Ok(stamp)
     }
 
     pub fn rope(&self) -> &Rope {
@@ -323,24 +326,6 @@ mod tests {
         assert!(b.is_modified());
 
         assert_eq!(Buffer::load(&path).unwrap().rope().to_string(), "あ");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn save_writes_in_place_when_the_directory_is_not_writable() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("kakikotoba-readonly-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("本文.txt");
-        fs::write(&path, "前").unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
-        let mut b = Buffer::load(&path).unwrap();
-        b.replace(0..1, "後");
-        let saved = b.save(&path);
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-        saved.unwrap();
-        assert!(!b.is_modified());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "後");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -3,7 +3,6 @@
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use kakikotoba_core::Buffer;
 use kakikotoba_core::recovery::{self, Session, Snapshot};
@@ -84,8 +83,6 @@ pub struct CandidatePaint {
 pub struct Editor {
     buffer: Buffer,
     path: Option<PathBuf>,
-    /// 文書をパスに結び付けた（開いた、保存した）ときのファイルの更新時刻。ファイルがなければ `None`
-    disk_stamp: Option<SystemTime>,
     pub fonts: Fonts,
     layout: Layout,
     layout_cache: Cache,
@@ -117,10 +114,6 @@ pub struct Editor {
     autosave_failed: bool,
 }
 
-fn disk_stamp(path: Option<&Path>) -> Option<SystemTime> {
-    path.and_then(|path| std::fs::metadata(path).ok()).and_then(|meta| meta.modified().ok())
-}
-
 fn settings_for(height: f32) -> Settings {
     let exact = (height - 2.0 * MARGIN) / (CHARS_PER_COLUMN + HANGING_CHARS) as f32;
     let font_size = ((exact / FONT_SIZE_STEP).floor() * FONT_SIZE_STEP).max(MIN_FONT_SIZE);
@@ -141,7 +134,6 @@ impl Editor {
         let mut editor = Self {
             body_text: ((buffer.revision(), options), body_text),
             buffer,
-            disk_stamp: disk_stamp(path.as_deref()),
             path,
             fonts,
             layout,
@@ -633,7 +625,6 @@ impl Editor {
     pub fn save(&mut self) -> io::Result<()> {
         let path = self.path.clone().ok_or(io::ErrorKind::InvalidInput)?;
         self.buffer.save(&path)?;
-        self.disk_stamp = disk_stamp(Some(&path));
         self.remove_recovery();
         Ok(())
     }
@@ -641,13 +632,15 @@ impl Editor {
     /// 開いた（保存した）後に、ファイルがこのアプリの外で書き換えられた、作られた、消されたか。
     /// 保存すると外での変更を上書きするので、保存の前に確かめる。
     pub fn changed_on_disk(&self) -> bool {
-        self.path.is_some() && disk_stamp(self.path.as_deref()) != self.disk_stamp
+        let Some(path) = &self.path else {
+            return false;
+        };
+        std::fs::metadata(path).ok().and_then(|meta| meta.modified().ok()) != self.buffer.disk_stamp()
     }
 
     pub fn save_as(&mut self, path: PathBuf) -> io::Result<()> {
         self.buffer.save(&path)?;
         self.remove_recovery();
-        self.disk_stamp = disk_stamp(Some(&path));
         self.path = Some(path);
         self.update_highlighter(self.highlighter.options().symbol_forms);
         self.relayout();
@@ -764,8 +757,6 @@ impl Editor {
         self.remove_recovery();
         self.buffer = buffer;
         self.page_view = None;
-        // 復元した文書は、元のファイルが新しいかどうかを復元の前に示している
-        self.disk_stamp = disk_stamp(path.as_deref());
         self.path = path;
         self.update_highlighter(self.highlighter.options().symbol_forms);
         self.scroll = 0.0;
@@ -1156,7 +1147,7 @@ mod tests {
             e.save_as(path.clone()).unwrap();
             assert!(!e.changed_on_disk());
 
-            std::fs::File::options().write(true).open(&path).unwrap().set_modified(SystemTime::UNIX_EPOCH).unwrap();
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
             assert!(e.changed_on_disk());
             e.save().unwrap();
             assert!(!e.changed_on_disk());
