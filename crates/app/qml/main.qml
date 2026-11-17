@@ -358,7 +358,6 @@ Kirigami.ApplicationWindow {
             GlobalItem { command: pasteCommand }
             Platform.MenuSeparator {}
             GlobalItem { command: selectAllCommand }
-            GlobalItem { command: findCommand }
         }
         Platform.Menu {
             title: "表示(&V)"
@@ -561,6 +560,11 @@ Kirigami.ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+Shift+Z"
         onActivated: editor.redo()
+    }
+    Shortcut {
+        sequence: findCommand.keys
+        enabled: findCommand.enabled
+        onActivated: findCommand.trigger()
     }
     Shortcut {
         sequence: "Esc"
