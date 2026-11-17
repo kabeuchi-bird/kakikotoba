@@ -104,7 +104,7 @@ fn write_snapshot(tmp: &Path, path: Option<&Path>, text: &Rope) -> io::Result<()
     writer.write_all(&escape(path.map_or(&[][..], |path| path.as_os_str().as_bytes())))?;
     writer.write_all(b"\n\n")?;
     text.write_to(&mut writer)?;
-    writer.into_inner().map_err(|e| e.into_error())?.sync_all()
+    writer.into_inner().map_err(io::IntoInnerError::into_error)?.sync_all()
 }
 
 /// 元のパスを1行に収めるため、`\` と改行をエスケープする。

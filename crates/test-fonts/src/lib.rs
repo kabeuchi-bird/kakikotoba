@@ -19,9 +19,10 @@ pub fn path(pattern: &str) -> String {
     let list = String::from_utf8_lossy(&output.stdout);
     let mut paths: Vec<&str> = list.lines().filter_map(|line| line.strip_prefix("0\t")).collect();
     paths.sort_unstable();
-    paths.first().map(|path| path.to_string()).unwrap_or_else(|| {
-        panic!("テスト用のフォントがない: {pattern}（Noto CJK と DejaVu を入れる。パッケージ名はREADMEの「開発」を参照）")
-    })
+    paths.first().map_or_else(
+        || panic!("テスト用のフォントがない: {pattern}（Noto CJK と DejaVu を入れる。パッケージ名はREADMEの「開発」を参照）"),
+        ToString::to_string,
+    )
 }
 
 /// フォントファイルを読む。`Font` が `'static` を要るテスト向けに、読んだデータは解放しない。

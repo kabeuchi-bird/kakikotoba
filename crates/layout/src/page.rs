@@ -379,9 +379,9 @@ impl<'a, 'f> Flow<'a, 'f> {
                 let pair: String = chars[i..i + 2].iter().collect();
                 Some((self.tcy(&pair, source + i, style), 2))
             } else if c == '―' {
-                Some((self.dash(source + i, style), 1))
+                Some((Self::dash(source + i, style), 1))
             } else if is_wave(c) && chars[i..].iter().take(WAVE_CHARS).filter(|c| is_wave(**c)).count() == WAVE_CHARS {
-                Some((self.wave(source + i, style), WAVE_CHARS))
+                Some((Self::wave(source + i, style), WAVE_CHARS))
             } else {
                 None
             };
@@ -486,7 +486,7 @@ impl<'a, 'f> Flow<'a, 'f> {
         piece
     }
 
-    fn dash(&self, source: usize, style: Style) -> Piece {
+    fn dash(source: usize, style: Style) -> Piece {
         let mut piece = Piece::new('―', '―', style.scale, source);
         piece.lines.push(Rect {
             x: -style.scale * LINE_THICKNESS / 2.0,
@@ -497,7 +497,7 @@ impl<'a, 'f> Flow<'a, 'f> {
         piece
     }
 
-    fn wave(&self, source: usize, style: Style) -> Piece {
+    fn wave(source: usize, style: Style) -> Piece {
         let length = style.scale * WAVE_CHARS as f32;
         let mut piece = Piece::new('〜', '〜', length, source);
         piece.waves.push(Rect {
@@ -565,7 +565,9 @@ impl<'a, 'f> Flow<'a, 'f> {
         let total: usize = columns.iter().map(|c| c.width).sum();
         if total > lines {
             // 1ページに収まらなければ通常どおり流す
-            columns.into_iter().for_each(|column| self.place(column));
+            for column in columns {
+                self.place(column);
+            }
             return;
         }
         if self.used > 0 {
@@ -616,7 +618,9 @@ impl<'a, 'f> Flow<'a, 'f> {
     fn finish(mut self) -> PagedDocument {
         // 閉じていないページセンタリングは通常の本文として流す
         if let Some(columns) = self.centered.take() {
-            columns.into_iter().for_each(|column| self.place(column));
+            for column in columns {
+                self.place(column);
+            }
         }
         if self.used > 0 || self.pages.is_empty() {
             self.next_page();

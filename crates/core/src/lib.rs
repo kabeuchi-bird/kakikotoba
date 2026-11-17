@@ -123,7 +123,7 @@ impl Buffer {
             writer.write_all(BOM.as_bytes())?;
         }
         self.rope.write_to(&mut writer)?;
-        let file = writer.into_inner().map_err(|e| e.into_error())?;
+        let file = writer.into_inner().map_err(io::IntoInnerError::into_error)?;
         match fs::metadata(target) {
             Ok(meta) => {
                 // 所有者を引き継ぐ。権限がなくて変えられなければ、自分の所有になる

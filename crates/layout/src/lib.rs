@@ -108,7 +108,9 @@ impl<'a> Font<'a> {
         self.shape_runs(text, |font, part, id| {
             let mut clusters = font.shape_run(part, font_size, id);
             if id != 0 {
-                clusters.iter_mut().for_each(|cluster| cluster.fit(font_size));
+                for cluster in &mut clusters {
+                    cluster.fit(font_size);
+                }
             }
             clusters
         })
@@ -465,7 +467,9 @@ impl Layout {
                 && let Some(next) = metrics.get(end)
                 && kinsoku::splits_word(metrics[end - 1].1, next.0)
             {
-                hyphen.iter().for_each(|cluster| self.push_cluster(cluster, center, y, char_index - 1));
+                for cluster in hyphen {
+                    self.push_cluster(cluster, center, y, char_index - 1);
+                }
             }
             self.columns.push(first_stop..self.stops.len());
             start = end;
